@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.rig/sessions/
+.rig/cache/
+.rig/provider.json
+.DS_Store
