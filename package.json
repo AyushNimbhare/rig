@@ -4,7 +4,7 @@
   "description": "A terminal-native AI harness for autonomous agents",
   "repository": {
     "type": "git",
-    "url": "https://github.com/AyushNimbhare/rig.git"
+    "url": "git+https://github.com/AyushNimbhare/rig.git"
   },
   "homepage": "https://github.com/AyushNimbhare/rig#readme",
   "bugs": {
@@ -21,7 +21,7 @@
     }
   },
   "bin": {
-    "rig": "./dist/cli/index.js"
+    "rig": "dist/cli/index.js"
   },
   "files": [
     "dist",
