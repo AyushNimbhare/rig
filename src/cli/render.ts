@@ -543,6 +543,7 @@ export function renderHelp(noColor = false): string {
     `  ${theme.dim("─".repeat(40))}`,
     `    ${theme.accent("/help")}     ${theme.muted("Show this help message")}`,
     `    ${theme.accent("/provider")} ${theme.muted("Link an AI model provider")}`,
+    `    ${theme.accent("/model")}    ${theme.muted("Choose an AI model")}`,
     `    ${theme.accent("/clear")}    ${theme.muted("Reset conversation and screen")}`,
     `    ${theme.accent("/quit")}     ${theme.muted("Exit RIG harness")}`,
     `    ${theme.accent("/exit")}     ${theme.muted("Exit RIG harness")}`,

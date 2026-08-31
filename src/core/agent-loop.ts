@@ -1,7 +1,7 @@
 import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { ContextEngine } from "../context/context-engine.js";
-import { loadProviderConfig, type ProviderConfig } from "../config/provider-setup.js";
+import { loadModelConfig, loadProviderConfig, type ProviderConfig } from "../config/provider-setup.js";
 import { MockModelClient } from "../model/mock-model.js";
 import type { ChatMessage, ModelClient } from "../model/model-client.js";
 import { OpenAIClient } from "../model/openai-client.js";
@@ -41,7 +41,7 @@ export function createModelClient(modelName?: string, providerConfig?: ProviderC
   if (hasKey) {
     try {
       return new OpenAIClient({
-        model: modelName,
+        model: modelName || providerConfig?.model,
         apiKey: providerConfig?.apiKey,
         baseUrl: providerBaseUrl,
       });
@@ -72,7 +72,8 @@ export async function runAgentLoop(input: AgentInput, clientOverride?: ModelClie
   });
 
   const providerConfig = await loadProviderConfig(workspace);
-  const modelClient = clientOverride || createModelClient(input.model, providerConfig);
+  const selectedModel = input.model || providerConfig?.model || (await loadModelConfig(workspace));
+  const modelClient = clientOverride || createModelClient(selectedModel, providerConfig);
 
   const allObservations: ToolObservation[] = [];
   const toolsUsedSet = new Set<string>();

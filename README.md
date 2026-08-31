@@ -87,6 +87,14 @@ Supported providers:
 
 The provider configuration is loaded automatically for subsequent `ask`, `run`, and interactive prompts. If no provider is configured, RIG uses its deterministic mock client for offline testing.
 
+### Choosing an AI Model
+
+In interactive mode, type `/model`. RIG queries the configured provider's OpenAI-compatible `/models` endpoint, then lets you browse the models returned by that provider with the arrow keys. Press Enter to select one. The choice is stored locally in `.rig/model.json` and is used for later prompts. If no provider is configured or discovery fails, RIG shows offline fallback presets instead. You can also override the model for one command with:
+
+```bash
+rig ask "Explain this repository" --model gpt-4o
+```
+
 ---
 
 ## CLI Usage

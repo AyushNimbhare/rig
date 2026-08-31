@@ -52,8 +52,16 @@ export {
   setupMcuWorkspace,
 } from "./config/mcu-setup.js";
 export type { McuProfile, McuSetupOptions, McuSetupResult, McuTemplate } from "./config/mcu-setup.js";
-export { PROVIDERS, loadProviderConfig, saveProviderConfig } from "./config/provider-setup.js";
-export type { ProviderConfig, ProviderId } from "./config/provider-setup.js";
+export {
+  MODELS,
+  PROVIDERS,
+  fetchAvailableModels,
+  loadModelConfig,
+  loadProviderConfig,
+  saveModelConfig,
+  saveProviderConfig,
+} from "./config/provider-setup.js";
+export type { AvailableModel, ProviderConfig, ProviderId } from "./config/provider-setup.js";
 
 // Context Engine
 export { ContextEngine } from "./context/context-engine.js";

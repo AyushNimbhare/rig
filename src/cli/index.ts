@@ -4,7 +4,15 @@ import readline from "node:readline";
 import { stdin as input, stdout as output } from "node:process";
 import { Command } from "commander";
 import { initializeMcuWorkspace, isMcuWorkspaceSetup } from "../config/mcu-setup.js";
-import { PROVIDERS, saveProviderConfig } from "../config/provider-setup.js";
+import {
+  MODELS,
+  PROVIDERS,
+  fetchAvailableModels,
+  loadProviderConfig,
+  saveModelConfig,
+  saveProviderConfig,
+  type AvailableModel,
+} from "../config/provider-setup.js";
 import { isWorkspaceSetup, setupWorkspace } from "../config/workspace-setup.js";
 import { runAgentLoop } from "../core/agent-loop.js";
 import type { AgentResult, ApprovalRequest } from "../core/agent-types.js";
@@ -20,6 +28,15 @@ import {
   renderUserMessage,
   renderWelcomeScreen,
 } from "./render.js";
+
+const COMMANDS: Array<[string, string]> = [
+  ["/provider", "Link an AI provider"],
+  ["/model", "Choose an AI model"],
+  ["/help", "Show available commands"],
+  ["/clear", "Reset the conversation"],
+  ["/exit", "Exit RIG"],
+  ["/quit", "Exit RIG"],
+];
 
 async function requestTerminalApproval(req: ApprovalRequest, noColor = false): Promise<boolean> {
   const theme = createTheme(noColor);
@@ -84,11 +101,20 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
     let conversationLayoutActive = false;
     let conversationContentBottom = 0;
     let conversationBoxTop = 0;
+    let commandPopupHeight = 0;
     let providerMode = false;
     let providerApiMode = false;
     let providerIndex = 0;
     let providerOverlayTop = 0;
     let providerOverlayHeight = 0;
+    let modelMode = false;
+    let modelIndex = 0;
+    let modelOptions: AvailableModel[] = [...MODELS];
+    let modelLoading = false;
+    let modelSearch = "";
+    let modelScrollOffset = 0;
+    let commandFilter = "";
+    let commandSelectionIndex = 0;
 
     function drawScreen(isGlitch = false) {
       if (inConversation || isExiting) return;
@@ -114,6 +140,7 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
       );
       output.write(`\u001b[H${screenContent}`);
       output.write(`\u001b[${cursorRow};${cursorCol}H\u001b[?25h`);
+      drawHomeCommandPopup(cursorRow, cursorCol);
     }
 
     function drawConversationInput() {
@@ -148,6 +175,74 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
       output.write(
         `\u001b[${conversationBoxTop + box.promptRowOffset};${box.promptCol + cursorPos}H\u001b[?25h`,
       );
+      drawCommandPopup(box);
+    }
+
+    function drawCommandPopup(box: ReturnType<typeof renderInputBox>) {
+      const query = commandFilter || inputBuffer.toLowerCase();
+      const matches = query.startsWith("/")
+        ? COMMANDS.filter(([command]) => command.startsWith(query))
+        : [];
+      const popupLines = matches.length > 0
+        ? [
+            "Commands",
+            ...matches.map(([command, description], index) =>
+              `${index === commandSelectionIndex ? "❯" : " "} ${command.padEnd(11)} ${description}`),
+          ]
+        : [];
+      const popupHeight = popupLines.length + 2;
+      const popupTop = conversationBoxTop - popupHeight;
+
+      for (let index = 0; index < commandPopupHeight; index++) {
+        output.write(`\u001b[${conversationBoxTop - index - 1};1H\u001b[2K`);
+      }
+      commandPopupHeight = 0;
+
+      if (popupLines.length === 0) return;
+
+      const theme = createTheme(noColor);
+      const width = Math.min(62, Math.max(42, (output.columns || 100) - 24));
+      const innerWidth = width - 2;
+      const lines = [
+        `╭${"─".repeat(innerWidth)}╮`,
+        ...popupLines.map((line) => `│  ${line.slice(0, innerWidth - 4).padEnd(innerWidth - 4)}  │`),
+        `╰${"─".repeat(innerWidth)}╯`,
+      ];
+      for (const [index, line] of lines.entries()) {
+        output.write(`\u001b[${popupTop + index};1H\u001b[2K${theme.border(line)}`);
+      }
+      commandPopupHeight = lines.length;
+      output.write(
+        `\u001b[${conversationBoxTop + box.promptRowOffset};${box.promptCol + cursorPos}H\u001b[?25h`,
+      );
+    }
+
+    function drawHomeCommandPopup(cursorRow: number, cursorCol: number) {
+      const query = commandFilter || inputBuffer.toLowerCase();
+      const matches = query.startsWith("/")
+        ? COMMANDS.filter(([command]) => command.startsWith(query))
+        : [];
+      if (matches.length === 0) return;
+
+      const theme = createTheme(noColor);
+      const width = Math.min(62, Math.max(42, (output.columns || 100) - 24));
+      const innerWidth = width - 2;
+      const content = [
+        "Commands",
+        ...matches.map(([command, description], index) =>
+          `${index === commandSelectionIndex ? "❯" : " "} ${command.padEnd(11)} ${description}`),
+      ];
+      const lines = [
+        `╭${"─".repeat(innerWidth)}╮`,
+        ...content.map((line) => `│  ${line.slice(0, innerWidth - 4).padEnd(innerWidth - 4)}  │`),
+        `╰${"─".repeat(innerWidth)}╯`,
+      ];
+      const boxTop = cursorRow - 3;
+      const popupTop = boxTop - lines.length;
+      for (const [index, line] of lines.entries()) {
+        output.write(`\u001b[${popupTop + index};1H\u001b[2K${theme.border(line)}`);
+      }
+      output.write(`\u001b[${cursorRow};${cursorCol}H\u001b[?25h`);
     }
 
     function submitConversationInput(task: string) {
@@ -200,6 +295,48 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
       drawProviderOverlay(lines, width, rows, theme);
     }
 
+    function renderModelMenu() {
+      const theme = createTheme(noColor);
+      const width = Math.min(86, Math.max(62, (output.columns || 100) - 16));
+      const rows = Math.max(24, output.rows || 30);
+      const filteredModels = modelOptions.filter((model) =>
+        model.id.toLowerCase().includes(modelSearch.toLowerCase()),
+      );
+      const viewportSize = 8;
+      const maxOffset = Math.max(0, filteredModels.length - viewportSize);
+      modelScrollOffset = Math.min(modelScrollOffset, maxOffset);
+      if (modelIndex >= filteredModels.length) modelIndex = Math.max(0, filteredModels.length - 1);
+      if (modelIndex < modelScrollOffset) modelScrollOffset = modelIndex;
+      if (modelIndex >= modelScrollOffset + viewportSize) {
+        modelScrollOffset = modelIndex - viewportSize + 1;
+      }
+      const visibleModels = filteredModels.slice(modelScrollOffset, modelScrollOffset + viewportSize);
+      drawProviderOverlay(
+        [
+          modelLoading ? "Fetching models from provider..." : "Select an AI model",
+          `Search: ${modelSearch}`,
+          "",
+          ...(modelLoading
+            ? ["Please wait...", "", "", "", "", "", "", ""]
+            : visibleModels.map((model, index) => {
+                const absoluteIndex = modelScrollOffset + index;
+                const marker = absoluteIndex === modelIndex ? "❯" : " ";
+                return `${marker} ${model.label}`;
+              })),
+          ...Array(Math.max(0, viewportSize - visibleModels.length)).fill(""),
+          "",
+          `${modelScrollOffset + 1}-${Math.min(modelScrollOffset + viewportSize, filteredModels.length)} of ${filteredModels.length}   ↑/↓ browse   Enter choose   Esc cancel`,
+        ],
+        width,
+        rows,
+        theme,
+      );
+      if (!modelLoading) {
+        const overlayTop = providerOverlayTop;
+        output.write(`\u001b[${overlayTop + 2};${12 + modelSearch.length}H\u001b[?25h`);
+      }
+    }
+
     function renderProviderApiPrompt() {
       const theme = createTheme(noColor);
       const width = Math.min(86, Math.max(62, (output.columns || 100) - 16));
@@ -249,6 +386,32 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
       cursorPos = 0;
       renderProviderMenu();
       output.write("\u001b[?25h");
+    }
+
+    async function beginModelCommand() {
+      modelMode = true;
+      modelIndex = 0;
+      modelSearch = "";
+      modelScrollOffset = 0;
+      modelLoading = true;
+      renderModelMenu();
+      try {
+        const providerConfig = await loadProviderConfig(workspace);
+        if (!providerConfig) {
+          modelOptions = [...MODELS];
+        } else {
+          const discovered = await fetchAvailableModels(providerConfig);
+          modelOptions = discovered.length > 0 ? discovered : [...MODELS];
+        }
+      } catch (error) {
+        modelOptions = [...MODELS];
+        const message = error instanceof Error ? error.message : String(error);
+        output.write(`\n  ${createTheme(noColor).warn(`${message} Using fallback presets.`)}\n`);
+      } finally {
+        modelLoading = false;
+        modelIndex = 0;
+        renderModelMenu();
+      }
     }
 
     console.clear();
@@ -346,6 +509,21 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
       resolve();
     };
 
+    function cycleCommandSelection(direction: 1 | -1): boolean {
+      const query = commandFilter || inputBuffer.toLowerCase();
+      if (!query.startsWith("/")) return false;
+      const matches = COMMANDS.filter(([command]) => command.startsWith(query));
+      if (matches.length === 0) return false;
+
+      commandSelectionIndex =
+        (commandSelectionIndex + direction + matches.length) % matches.length;
+      inputBuffer = matches[commandSelectionIndex][0];
+      cursorPos = inputBuffer.length;
+      if (inConversation) drawConversationInput();
+      else drawScreen(false);
+      return true;
+    }
+
     const handleInput = async (str: string, key: readline.Key) => {
       if (isExiting) return;
 
@@ -356,6 +534,73 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
       }
 
       lastTypingTime = Date.now();
+
+      if (modelMode) {
+        if (key.name === "escape") {
+          modelMode = false;
+          modelIndex = 0;
+          console.clear();
+          drawScreen(false);
+          return;
+        }
+        if (key.name === "up") {
+          if (modelLoading) return;
+          const count = modelOptions.filter((model) =>
+            model.id.toLowerCase().includes(modelSearch.toLowerCase()),
+          ).length;
+          if (count === 0) return;
+          modelIndex = (modelIndex + count - 1) % count;
+          renderModelMenu();
+          return;
+        }
+        if (key.name === "down") {
+          if (modelLoading) return;
+          const count = modelOptions.filter((model) =>
+            model.id.toLowerCase().includes(modelSearch.toLowerCase()),
+          ).length;
+          if (count === 0) return;
+          modelIndex = (modelIndex + 1) % count;
+          renderModelMenu();
+          return;
+        }
+        if (key.name === "return" || key.name === "enter") {
+          if (modelLoading || modelOptions.length === 0) return;
+          const filteredModels = modelOptions.filter((model) =>
+            model.id.toLowerCase().includes(modelSearch.toLowerCase()),
+          );
+          if (filteredModels.length === 0) return;
+          const selected = filteredModels[modelIndex];
+          await saveModelConfig(workspace, selected.id);
+          modelMode = false;
+          modelIndex = 0;
+          console.clear();
+          console.log(`\n  Model selected: ${selected.label}\n`);
+          inConversation = false;
+          conversationBoxVisible = false;
+          if (conversationLayoutActive) {
+            output.write("\u001b[r");
+            conversationLayoutActive = false;
+          }
+          drawScreen(false);
+          return;
+        }
+        if (key.name === "backspace") {
+          if (modelSearch.length > 0) {
+            modelSearch = modelSearch.slice(0, -1);
+            modelIndex = 0;
+            modelScrollOffset = 0;
+            renderModelMenu();
+          }
+          return;
+        }
+        if (str && !key.ctrl && !key.meta && str.length === 1) {
+          modelSearch += str;
+          modelIndex = 0;
+          modelScrollOffset = 0;
+          renderModelMenu();
+        }
+        return;
+      }
 
       if (providerMode) {
         if (key.name === "escape") {
@@ -481,6 +726,8 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
 
         if (task === "/clear") {
           inConversation = false;
+          commandFilter = "";
+          commandSelectionIndex = 0;
           conversationBoxVisible = false;
           if (conversationLayoutActive) {
             output.write("\u001b[r");
@@ -494,7 +741,18 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
         if (task === "/provider") {
           inputBuffer = "";
           cursorPos = 0;
+          commandFilter = "";
+          commandSelectionIndex = 0;
           await beginProviderCommand();
+          return;
+        }
+
+        if (task === "/model") {
+          inputBuffer = "";
+          cursorPos = 0;
+          commandFilter = "";
+          commandSelectionIndex = 0;
+          await beginModelCommand();
           return;
         }
 
@@ -548,6 +806,8 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
         if (cursorPos > 0) {
           inputBuffer = inputBuffer.slice(0, cursorPos - 1) + inputBuffer.slice(cursorPos);
           cursorPos--;
+          commandFilter = inputBuffer.startsWith("/") ? inputBuffer.toLowerCase() : "";
+          commandSelectionIndex = 0;
           if (inConversation) drawConversationInput();
           else drawScreen(false);
         }
@@ -561,6 +821,14 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
           else drawScreen(false);
         }
         return;
+      }
+
+      if (key.name === "up") {
+        if (cycleCommandSelection(-1)) return;
+      }
+
+      if (key.name === "down") {
+        if (cycleCommandSelection(1)) return;
       }
 
       if (key.name === "left") {
@@ -598,6 +866,8 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
       if (str && !key.ctrl && !key.meta && str.length === 1) {
         inputBuffer = inputBuffer.slice(0, cursorPos) + str + inputBuffer.slice(cursorPos);
         cursorPos++;
+        commandFilter = inputBuffer.startsWith("/") ? inputBuffer.toLowerCase() : "";
+        commandSelectionIndex = 0;
         if (inConversation) drawConversationInput();
         else drawScreen(false);
       }
