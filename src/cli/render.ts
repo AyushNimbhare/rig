@@ -1,4 +1,4 @@
-import chalk from "chalk";
+import chalk, { Chalk } from "chalk";
 import type { AgentResult, ToolObservation } from "../core/agent-types.js";
 
 export type AskResult = {
@@ -10,37 +10,37 @@ export type AskResult = {
 // ── Theme ──────────────────────────────────────────────────────────────────────
 
 export function createTheme(noColor = false) {
-  if (noColor) chalk.level = 0;
+  const c = noColor ? new Chalk({ level: 0 }) : chalk;
   return {
-    brand:         (v: string) => chalk.hex("#c084fc").bold(v),
-    hot:           (v: string) => chalk.hex("#e879f9").bold(v),
-    magenta:       (v: string) => chalk.hex("#d946ef")(v),
-    accent:        (v: string) => chalk.hex("#a855f7")(v),
-    dim:           (v: string) => chalk.hex("#3b2d54")(v),
-    muted:         (v: string) => chalk.hex("#8e85aa")(v),
-    text:          (v: string) => chalk.hex("#e9ddff")(v),
-    userText:      (v: string) => chalk.bold.white(v),
-    border:        (v: string) => chalk.hex("#a855f7")(v),
-    borderBright:  (v: string) => chalk.hex("#c084fc")(v),
-    button:        (v: string) => chalk.bgHex("#a855f7").hex("#ffffff").bold(v),
-    glow:          (v: string) => chalk.hex("#7c2dff")(v),
-    scanline:      (v: string) => chalk.hex("#581c87")(v),
-    scanlineHot:   (v: string) => chalk.hex("#f472b6")(v),
-    trafficRed:    (v: string) => chalk.hex("#ef4444")(v),
-    trafficYellow: (v: string) => chalk.hex("#eab308")(v),
-    trafficGreen:  (v: string) => chalk.hex("#22c55e")(v),
-    success:       (v: string) => chalk.hex("#a855f7")(v),
-    error:         (v: string) => chalk.hex("#f87171")(v),
-    warn:          (v: string) => chalk.hex("#fbbf24")(v),
-    cyan:          (v: string) => chalk.hex("#38bdf8")(v),
-    label:         (v: string) => chalk.hex("#8e85aa").italic(v),
+    brand:         (v: string) => c.hex("#c084fc").bold(v),
+    hot:           (v: string) => c.hex("#e879f9").bold(v),
+    magenta:       (v: string) => c.hex("#d946ef")(v),
+    accent:        (v: string) => c.hex("#a855f7")(v),
+    dim:           (v: string) => c.hex("#3b2d54")(v),
+    muted:         (v: string) => c.hex("#8e85aa")(v),
+    text:          (v: string) => c.hex("#e9ddff")(v),
+    userText:      (v: string) => c.bold.white(v),
+    border:        (v: string) => c.hex("#a855f7")(v),
+    borderBright:  (v: string) => c.hex("#c084fc")(v),
+    button:        (v: string) => c.bgHex("#a855f7").hex("#ffffff").bold(v),
+    glow:          (v: string) => c.hex("#7c2dff")(v),
+    scanline:      (v: string) => c.hex("#581c87")(v),
+    scanlineHot:   (v: string) => c.hex("#f472b6")(v),
+    trafficRed:    (v: string) => c.hex("#ef4444")(v),
+    trafficYellow: (v: string) => c.hex("#eab308")(v),
+    trafficGreen:  (v: string) => c.hex("#22c55e")(v),
+    success:       (v: string) => c.hex("#a855f7")(v),
+    error:         (v: string) => c.hex("#f87171")(v),
+    warn:          (v: string) => c.hex("#fbbf24")(v),
+    cyan:          (v: string) => c.hex("#38bdf8")(v),
+    label:         (v: string) => c.hex("#8e85aa").italic(v),
   };
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
 
 export function stripAnsi(str: string): string {
-  return str.replace(/\u001b\[[0-9;]*[a-zA-Z]/g, "");
+  return str.replace(/\u001b\[[0-9;]*[a-zA-Z]/g, "").replace(/\u001b\][^\u0007]*\u0007/g, "").replace(/\u001b\(B/g, "");
 }
 
 export function visibleLength(str: string): number {
@@ -63,13 +63,36 @@ export function fit(value: string, width: number): string {
   const size = visibleLength(value);
   if (size === width) return value;
   if (size < width) return value + " ".repeat(width - size);
-  return stripAnsi(value).slice(0, width);
+  let out = "";
+  let vis = 0;
+  let ansi = false;
+  let esc = "";
+  for (const ch of value) {
+    if (ch === "\u001b") ansi = true;
+    if (ansi) {
+      esc += ch;
+      if (/[a-zA-Z\u0007]/.test(ch)) {
+        out += esc;
+        ansi = false;
+        esc = "";
+      } else {
+        out += "";
+      }
+      continue;
+    }
+    if (vis >= width) break;
+    out += ch;
+    vis++;
+  }
+  return out;
 }
 
-export function getTerminalDimensions(): { columns: number; rows: number } {
+export function getTerminalDimensions(output?: { columns?: number; rows?: number }): { columns: number; rows: number } {
+  const cols = output?.columns ?? process.stdout.columns;
+  const rowsVal = output?.rows ?? process.stdout.rows;
   return {
-    columns: Math.max(80, process.stdout.columns || 100),
-    rows: Math.max(24, process.stdout.rows || 30),
+    columns: Math.max(80, cols || 100),
+    rows: Math.max(24, rowsVal || 30),
   };
 }
 
@@ -260,9 +283,31 @@ export function renderInputBox(
   const activeControlsText = showFullControls ? controlsFormatted : button;
   const activeControlsLen = showFullControls ? controlsLen : visibleLength("[→]");
 
+  const maxInputVisible = Math.max(0, usableWidth - promptSymbolLen - activeControlsLen - 1);
+  let displayInput = inputBuffer;
+  let displayCursorOffset = cursorPos;
+  if (visibleLength(inputBuffer) > maxInputVisible && maxInputVisible > 0) {
+    if (cursorPos <= maxInputVisible - 1) {
+      displayInput = inputBuffer.slice(0, maxInputVisible - 1) + "…";
+      displayCursorOffset = Math.min(cursorPos, visibleLength(displayInput));
+    } else if (cursorPos >= visibleLength(inputBuffer) - (maxInputVisible - 1)) {
+      const tail = inputBuffer.slice(-(maxInputVisible - 1));
+      displayInput = "…" + tail;
+      displayCursorOffset = visibleLength(displayInput) - (visibleLength(inputBuffer) - cursorPos);
+    } else {
+      const half = Math.floor((maxInputVisible - 2) / 2);
+      const start = Math.max(0, cursorPos - half);
+      displayInput = "…" + inputBuffer.slice(start, start + maxInputVisible - 2) + "…";
+      displayCursorOffset = visibleLength(displayInput) - (maxInputVisible - half - 1);
+    }
+  } else if (visibleLength(inputBuffer) > maxInputVisible) {
+    displayInput = inputBuffer.slice(0, maxInputVisible);
+    displayCursorOffset = Math.min(cursorPos, maxInputVisible);
+  }
+
   const spaceBetween = Math.max(
     1,
-    usableWidth - promptSymbolLen - visibleLength(inputBuffer) - activeControlsLen,
+    usableWidth - promptSymbolLen - visibleLength(displayInput) - activeControlsLen,
   );
 
   const inputLine =
@@ -270,7 +315,7 @@ export function renderInputBox(
     theme.border("│") +
     " ".repeat(textPadding) +
     theme.accent(promptSymbol) +
-    theme.userText(inputBuffer) +
+    theme.userText(displayInput) +
     " ".repeat(spaceBetween) +
     activeControlsText +
     " ".repeat(textPadding) +
@@ -289,7 +334,7 @@ export function renderInputBox(
     footerLine,
   ];
 
-  const promptCol = leftPad + 1 + textPadding + promptSymbolLen + 1;
+  const promptCol = leftPad + 1 + textPadding + promptSymbolLen + 1 + displayCursorOffset - cursorPos;
   const promptRowOffset = 3;
 
   return {

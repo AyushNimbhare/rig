@@ -1,12 +1,15 @@
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-export type ProviderId = "openai" | "openrouter" | "ollama" | "custom";
+export type ProviderId = "openai" | "openrouter" | "ollama" | "anthropic" | "custom";
+
+export type ApiCompat = "openai" | "anthropic";
 
 export type ProviderConfig = {
   provider: ProviderId;
   apiKey: string;
   baseUrl?: string;
+  apiCompat?: ApiCompat;
   model?: string;
   updatedAt: string;
 };
@@ -17,20 +20,19 @@ export type AvailableModel = {
   description: string;
 };
 
-export const MODELS = [
-  { id: "gpt-4o-mini", label: "GPT-4o mini", description: "Fast and cost-efficient OpenAI model." },
-  { id: "gpt-4o", label: "GPT-4o", description: "General-purpose OpenAI model." },
-  { id: "gpt-4.1-mini", label: "GPT-4.1 mini", description: "Compact OpenAI coding model." },
-  { id: "claude-3-5-sonnet", label: "Claude 3.5 Sonnet", description: "Strong reasoning and coding model." },
-  { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash", description: "Fast Google model." },
-  { id: "llama-3.3-70b-instruct", label: "Llama 3.3 70B", description: "Open model available through compatible providers." },
-] as const;
+/**
+ * @deprecated Hard-coded model list removed for realtime data.
+ * Use fetchAvailableModels() with a configured provider instead.
+ * Kept as empty for backwards compat — will be removed.
+ */
+export const MODELS: AvailableModel[] = [];
 
-export const PROVIDERS: Array<{ id: ProviderId; label: string; description: string; baseUrl?: string }> = [
-  { id: "openai", label: "OpenAI", description: "Use OpenAI's hosted models." },
-  { id: "openrouter", label: "OpenRouter", description: "Use models through OpenRouter." },
-  { id: "ollama", label: "Ollama (local)", description: "Use a local Ollama OpenAI-compatible endpoint.", baseUrl: "http://localhost:11434/v1" },
-  { id: "custom", label: "Custom endpoint", description: "Use any OpenAI-compatible API endpoint." },
+export const PROVIDERS: Array<{ id: ProviderId; label: string; description: string; baseUrl?: string; apiCompat?: ApiCompat }> = [
+  { id: "openai", label: "OpenAI", description: "Use OpenAI's hosted models.", apiCompat: "openai" },
+  { id: "openrouter", label: "OpenRouter", description: "Use models through OpenRouter.", apiCompat: "openai" },
+  { id: "anthropic", label: "Anthropic", description: "Use Anthropic Claude directly.", apiCompat: "anthropic", baseUrl: "https://api.anthropic.com" },
+  { id: "ollama", label: "Ollama (local)", description: "Use a local Ollama OpenAI-compatible endpoint.", baseUrl: "http://localhost:11434/v1", apiCompat: "openai" },
+  { id: "custom", label: "Custom / Third-party", description: "Any OpenAI or Anthropic-compatible endpoint.", apiCompat: "openai" },
 ];
 
 function providerConfigPath(workspace: string): string {
@@ -84,17 +86,33 @@ export async function loadProviderConfig(workspace: string): Promise<ProviderCon
 }
 
 function resolveModelsEndpoint(config: ProviderConfig): string {
+  const compat = config.apiCompat || (config.provider === "anthropic" ? "anthropic" : "openai");
+  if (compat === "anthropic") {
+    const baseUrl = config.baseUrl || "https://api.anthropic.com";
+    return `${baseUrl.replace(/\/+$/, "")}/v1/models`;
+  }
   const baseUrl =
     config.baseUrl ||
     (config.provider === "openrouter" ? "https://openrouter.ai/api/v1" : "https://api.openai.com/v1");
   return `${baseUrl.replace(/\/+$/, "")}/models`;
 }
 
+function buildAuthHeaders(config: ProviderConfig): Record<string, string> {
+  const compat = config.apiCompat || (config.provider === "anthropic" ? "anthropic" : "openai");
+  if (compat === "anthropic") {
+    return {
+      "x-api-key": config.apiKey,
+      "anthropic-version": "2023-06-01",
+    };
+  }
+  return config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {};
+}
+
 export async function fetchAvailableModels(config: ProviderConfig): Promise<AvailableModel[]> {
   const response = await fetch(resolveModelsEndpoint(config), {
     headers: {
       Accept: "application/json",
-      ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+      ...buildAuthHeaders(config),
     },
   });
 
@@ -102,18 +120,22 @@ export async function fetchAvailableModels(config: ProviderConfig): Promise<Avai
     throw new Error(`Model discovery failed (${response.status} ${response.statusText}).`);
   }
 
-  const payload = (await response.json()) as { data?: unknown };
-  if (!Array.isArray(payload.data)) {
+  const payload = (await response.json()) as { data?: unknown; models?: unknown };
+  const raw = Array.isArray(payload.data) ? payload.data : Array.isArray(payload.models) ? payload.models : null;
+  if (!raw) {
     throw new Error("Model discovery returned an invalid response.");
   }
 
-  return payload.data
-    .filter((model): model is { id: string } => {
+  return raw
+    .filter((model): model is { id: string } & Record<string, unknown> => {
       return typeof model === "object" && model !== null && typeof (model as { id?: unknown }).id === "string";
     })
-    .map((model) => ({
-      id: model.id,
-      label: model.id,
-      description: "Available from the configured provider.",
-    }));
+    .map((model) => {
+      const displayName = (model as { display_name?: unknown }).display_name;
+      return {
+        id: model.id,
+        label: typeof displayName === "string" ? `${model.id} — ${displayName}` : model.id,
+        description: "Available from the configured provider.",
+      };
+    });
 }

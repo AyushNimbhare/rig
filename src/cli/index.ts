@@ -5,7 +5,6 @@ import { stdin as input, stdout as output } from "node:process";
 import { Command } from "commander";
 import { initializeMcuWorkspace, isMcuWorkspaceSetup } from "../config/mcu-setup.js";
 import {
-  MODELS,
   PROVIDERS,
   fetchAvailableModels,
   loadProviderConfig,
@@ -28,6 +27,7 @@ import {
   renderUserMessage,
   renderWelcomeScreen,
 } from "./render.js";
+import { fuzzyFilter } from "./fuzzy.js";
 
 const COMMANDS: Array<[string, string]> = [
   ["/provider", "Link an AI provider"],
@@ -40,27 +40,45 @@ const COMMANDS: Array<[string, string]> = [
 
 async function requestTerminalApproval(req: ApprovalRequest, noColor = false): Promise<boolean> {
   const theme = createTheme(noColor);
-  console.log(`\n  ${theme.warn("⚠")} ${theme.warn("Permission Required")}`);
-  console.log(`  ${theme.muted("Action:")}  ${theme.brand(req.tool)}`);
-  if (req.reason) {
-    console.log(`  ${theme.muted("Reason:")}  ${req.reason}`);
-  }
-  if (req.arguments["command"]) {
-    console.log(`  ${theme.muted("Command:")} ${theme.accent(String(req.arguments["command"]))}`);
-  }
-  if (req.arguments["patch"]) {
-    const patchPreview = String(req.arguments["patch"]).split("\n").slice(0, 5).join("\n    ");
-    console.log(`  ${theme.muted("Patch:")}\n    ${theme.dim(patchPreview)}...`);
-  }
-
-  const rl = readline.createInterface({ input, output });
+  // Ensure we are in cooked mode for readline question
+  let needRestoreRaw = false;
   try {
-    const answer = await new Promise<string>((resolve) => {
-      rl.question(`\n  ${theme.accent("Approve? [y/N]:")} `, (ans) => resolve(ans.trim()));
-    });
-    return answer.toLowerCase() === "y" || answer.toLowerCase() === "yes";
+    if (input.isTTY && typeof (input as any).setRawMode === "function") {
+      try {
+        const cur = (input as any).isRaw;
+        if (cur) {
+          (input as any).setRawMode(false);
+          needRestoreRaw = true;
+        }
+      } catch {}
+    }
+    output.write("\u001b[r");
+    console.log(`\n  ${theme.warn("⚠")} ${theme.warn("Permission Required")}`);
+    console.log(`  ${theme.muted("Action:")}  ${theme.brand(req.tool)}`);
+    if (req.reason) {
+      console.log(`  ${theme.muted("Reason:")}  ${req.reason}`);
+    }
+    if (req.arguments["command"]) {
+      console.log(`  ${theme.muted("Command:")} ${theme.accent(String(req.arguments["command"]))}`);
+    }
+    if (req.arguments["patch"]) {
+      const patchPreview = String(req.arguments["patch"]).split("\n").slice(0, 5).join("\n    ");
+      console.log(`  ${theme.muted("Patch:")}\n    ${theme.dim(patchPreview)}...`);
+    }
+
+    const rl = readline.createInterface({ input, output });
+    try {
+      const answer = await new Promise<string>((resolve) => {
+        rl.question(`\n  ${theme.accent("Approve? [y/N]:")} `, (ans) => resolve(ans.trim()));
+      });
+      return answer.toLowerCase() === "y" || answer.toLowerCase() === "yes";
+    } finally {
+      rl.close();
+    }
   } finally {
-    rl.close();
+    if (needRestoreRaw) {
+      try { (input as any).setRawMode(true); } catch {}
+    }
   }
 }
 
@@ -104,12 +122,16 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
     let commandPopupHeight = 0;
     let providerMode = false;
     let providerApiMode = false;
+    let providerCustomStage: "compat" | "baseUrl" | "apiKey" | null = null;
+    let providerTempCompat: "openai" | "anthropic" = "openai";
+    let providerTempBaseUrl = "";
+    let providerCompatIndex = 0;
     let providerIndex = 0;
     let providerOverlayTop = 0;
     let providerOverlayHeight = 0;
     let modelMode = false;
     let modelIndex = 0;
-    let modelOptions: AvailableModel[] = [...MODELS];
+    let modelOptions: AvailableModel[] = [];
     let modelLoading = false;
     let modelSearch = "";
     let modelScrollOffset = 0;
@@ -126,7 +148,7 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
           cursorPos,
           { noColor },
         );
-        output.write(`\u001b[H${screenContent}`);
+        output.write(`\u001b[H\u001b[J${screenContent}`);
         output.write(`\u001b[${cursorRow};${cursorCol}H\u001b[?25h`);
         return;
       }
@@ -138,7 +160,7 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
         isGlitch,
         { noColor },
       );
-      output.write(`\u001b[H${screenContent}`);
+      output.write(`\u001b[H\u001b[J${screenContent}`);
       output.write(`\u001b[${cursorRow};${cursorCol}H\u001b[?25h`);
       drawHomeCommandPopup(cursorRow, cursorCol);
     }
@@ -181,7 +203,7 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
     function drawCommandPopup(box: ReturnType<typeof renderInputBox>) {
       const query = commandFilter || inputBuffer.toLowerCase();
       const matches = query.startsWith("/")
-        ? COMMANDS.filter(([command]) => command.startsWith(query))
+        ? fuzzyFilter(COMMANDS, query, ([command]) => command)
         : [];
       const popupLines = matches.length > 0
         ? [
@@ -191,10 +213,11 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
           ]
         : [];
       const popupHeight = popupLines.length + 2;
-      const popupTop = conversationBoxTop - popupHeight;
+      const popupTop = Math.max(1, conversationBoxTop - popupHeight);
 
       for (let index = 0; index < commandPopupHeight; index++) {
-        output.write(`\u001b[${conversationBoxTop - index - 1};1H\u001b[2K`);
+        const clearRow = conversationBoxTop - index - 1;
+        if (clearRow >= 1) output.write(`\u001b[${clearRow};1H\u001b[2K`);
       }
       commandPopupHeight = 0;
 
@@ -220,7 +243,7 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
     function drawHomeCommandPopup(cursorRow: number, cursorCol: number) {
       const query = commandFilter || inputBuffer.toLowerCase();
       const matches = query.startsWith("/")
-        ? COMMANDS.filter(([command]) => command.startsWith(query))
+        ? fuzzyFilter(COMMANDS, query, ([command]) => command)
         : [];
       if (matches.length === 0) return;
 
@@ -238,8 +261,9 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
         `╰${"─".repeat(innerWidth)}╯`,
       ];
       const boxTop = cursorRow - 3;
-      const popupTop = boxTop - lines.length;
+      const popupTop = Math.max(1, boxTop - lines.length);
       for (const [index, line] of lines.entries()) {
+        if (popupTop + index < 1) continue;
         output.write(`\u001b[${popupTop + index};1H\u001b[2K${theme.border(line)}`);
       }
       output.write(`\u001b[${cursorRow};${cursorCol}H\u001b[?25h`);
@@ -260,21 +284,31 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
       let frameIndex = 0;
       let stopped = false;
       const render = () => {
-        if (!stopped) {
-          output.write(
-            `\r\u001b[2K  ${theme.accent(frames[frameIndex])} ${theme.muted("RIG is thinking...")}`,
-          );
-          frameIndex = (frameIndex + 1) % frames.length;
+        if (stopped) return;
+        const line = `  ${theme.accent(frames[frameIndex])} ${theme.muted("RIG is thinking...")}`;
+        if (conversationLayoutActive) {
+          output.write(`\u001b[${conversationContentBottom};1H\u001b[2K${line}`);
+        } else {
+          output.write(`\r\u001b[2K${line}`);
         }
+        frameIndex = (frameIndex + 1) % frames.length;
       };
 
-      output.write("\n");
+      if (conversationLayoutActive) {
+        output.write(`\u001b[${conversationContentBottom};1H\u001b[2K`);
+      } else {
+        output.write("\n");
+      }
       render();
       const timer = setInterval(render, 120);
       return () => {
         stopped = true;
         clearInterval(timer);
-        output.write("\r\u001b[2K");
+        if (conversationLayoutActive) {
+          output.write(`\u001b[${conversationContentBottom};1H\u001b[2K`);
+        } else {
+          output.write("\r\u001b[2K");
+        }
       };
     }
 
@@ -299,9 +333,7 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
       const theme = createTheme(noColor);
       const width = Math.min(86, Math.max(62, (output.columns || 100) - 16));
       const rows = Math.max(24, output.rows || 30);
-      const filteredModels = modelOptions.filter((model) =>
-        model.id.toLowerCase().includes(modelSearch.toLowerCase()),
-      );
+      const filteredModels = fuzzyFilter(modelOptions, modelSearch, (model) => `${model.id} ${model.label} ${model.description}`);
       const viewportSize = 8;
       const maxOffset = Math.max(0, filteredModels.length - viewportSize);
       modelScrollOffset = Math.min(modelScrollOffset, maxOffset);
@@ -311,6 +343,11 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
         modelScrollOffset = modelIndex - viewportSize + 1;
       }
       const visibleModels = filteredModels.slice(modelScrollOffset, modelScrollOffset + viewportSize);
+      const emptyHint = !modelLoading && filteredModels.length === 0
+        ? (modelOptions.length === 0
+          ? "No models — add a provider with /provider first"
+          : "No matches — try a different search")
+        : null;
       drawProviderOverlay(
         [
           modelLoading ? "Fetching models from provider..." : "Select an AI model",
@@ -318,12 +355,14 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
           "",
           ...(modelLoading
             ? ["Please wait...", "", "", "", "", "", "", ""]
-            : visibleModels.map((model, index) => {
-                const absoluteIndex = modelScrollOffset + index;
-                const marker = absoluteIndex === modelIndex ? "❯" : " ";
-                return `${marker} ${model.label}`;
-              })),
-          ...Array(Math.max(0, viewportSize - visibleModels.length)).fill(""),
+            : emptyHint
+              ? [emptyHint, "", "", "", "", "", "", ""]
+              : visibleModels.map((model, index) => {
+                  const absoluteIndex = modelScrollOffset + index;
+                  const marker = absoluteIndex === modelIndex ? "❯" : " ";
+                  return `${marker} ${model.label}`;
+                })),
+          ...Array(Math.max(0, viewportSize - (emptyHint ? 1 : visibleModels.length))).fill(""),
           "",
           `${modelScrollOffset + 1}-${Math.min(modelScrollOffset + viewportSize, filteredModels.length)} of ${filteredModels.length}   ↑/↓ browse   Enter choose   Esc cancel`,
         ],
@@ -335,6 +374,50 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
         const overlayTop = providerOverlayTop;
         output.write(`\u001b[${overlayTop + 2};${12 + modelSearch.length}H\u001b[?25h`);
       }
+    }
+
+    function renderProviderCompatPrompt() {
+      const theme = createTheme(noColor);
+      const width = Math.min(86, Math.max(62, (output.columns || 100) - 16));
+      const rows = Math.max(24, output.rows || 30);
+      const compatOptions = [
+        { id: "openai", label: "OpenAI-compatible", description: "OpenAI format (Bearer token, /v1/models)" },
+        { id: "anthropic", label: "Anthropic", description: "Anthropic format (x-api-key, /v1/models)" },
+      ];
+      const lines = [
+        `Third-party API type`,
+        "",
+        `Select compatibility for ${PROVIDERS[providerIndex].label}:`,
+        "",
+        ...compatOptions.map((opt, index) => {
+          const marker = index === providerCompatIndex ? "❯" : " ";
+          return `${marker} ${opt.label} — ${opt.description}`;
+        }),
+        "",
+        "↑/↓ browse   ↵ choose   Esc cancel",
+      ];
+      drawProviderOverlay(lines, width, rows, theme);
+    }
+
+    function renderProviderBaseUrlPrompt() {
+      const theme = createTheme(noColor);
+      const width = Math.min(86, Math.max(62, (output.columns || 100) - 16));
+      const rows = Math.max(24, output.rows || 30);
+      const defaultHint = providerTempCompat === "anthropic" ? "https://api.anthropic.com" : "https://api.example.com/v1";
+      const lines = [
+        `Link ${PROVIDERS[providerIndex].label} (${providerTempCompat})`,
+        "",
+        "Enter the base URL for the API.",
+        `Example: ${defaultHint}`,
+        "",
+        `URL = ${inputBuffer}`,
+        "",
+        "Enter save   Esc cancel",
+      ];
+      drawProviderOverlay(lines, width, rows, theme);
+      const cursorLine = 5;
+      const cursorCol = 1 + 3 + "URL = ".length + inputBuffer.length;
+      output.write(`\u001b[${providerOverlayTop + 1 + cursorLine};${cursorCol}H\u001b[?25h`);
     }
 
     function renderProviderApiPrompt() {
@@ -359,6 +442,7 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
       rows: number,
       theme: ReturnType<typeof createTheme>,
     ) {
+      if (conversationLayoutActive) output.write("\u001b[r");
       const innerWidth = width - 2;
       const top = Math.max(2, Math.floor((rows - content.length - 2) / 2));
       const lines = [
@@ -381,6 +465,10 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
     async function beginProviderCommand() {
       providerMode = true;
       providerApiMode = false;
+      providerCustomStage = null;
+      providerTempBaseUrl = "";
+      providerTempCompat = "openai";
+      providerCompatIndex = 0;
       providerIndex = 0;
       inputBuffer = "";
       cursorPos = 0;
@@ -398,15 +486,19 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
       try {
         const providerConfig = await loadProviderConfig(workspace);
         if (!providerConfig) {
-          modelOptions = [...MODELS];
+          modelOptions = [];
+          output.write(`\n  ${createTheme(noColor).warn(`No provider configured. Use /provider to add one.`)}\n`);
         } else {
           const discovered = await fetchAvailableModels(providerConfig);
-          modelOptions = discovered.length > 0 ? discovered : [...MODELS];
+          modelOptions = discovered;
+          if (discovered.length === 0) {
+            output.write(`\n  ${createTheme(noColor).warn(`Provider returned 0 models. Check base URL / API type.`)}\n`);
+          }
         }
       } catch (error) {
-        modelOptions = [...MODELS];
+        modelOptions = [];
         const message = error instanceof Error ? error.message : String(error);
-        output.write(`\n  ${createTheme(noColor).warn(`${message} Using fallback presets.`)}\n`);
+        output.write(`\n  ${createTheme(noColor).warn(`${message} — realtime fetch failed, no hard-coded fallback.`)}\n`);
       } finally {
         modelLoading = false;
         modelIndex = 0;
@@ -414,13 +506,14 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
       }
     }
 
+    output.write("\u001b[r");
     console.clear();
     drawScreen(false);
 
     if (!noColor && output.isTTY) {
       const scheduleNextGlitch = () => {
         if (isExiting) return;
-        const delay = 3500 + Math.floor(Math.random() * 2000);
+        const delay = 15000 + Math.floor(Math.random() * 5000);
         glitchInterval = setTimeout(() => {
           if (!inConversation && !inSetupMode && !isExiting && Date.now() - lastTypingTime > 1500) {
             drawScreen(true);
@@ -429,7 +522,7 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
                 drawScreen(false);
               }
               scheduleNextGlitch();
-            }, 110);
+            }, 200);
           } else {
             scheduleNextGlitch();
           }
@@ -439,16 +532,42 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
     }
 
     const onResize = () => {
-      if (!inConversation && !isExiting) {
+      if (isExiting) return;
+      output.write("\u001b[r");
+      if (inConversation) {
+        output.write("\u001b[r");
         console.clear();
+        inConversation = false;
+        conversationBoxVisible = false;
+        if (conversationLayoutActive) {
+          output.write("\u001b[r");
+          conversationLayoutActive = false;
+        }
         drawScreen(false);
+        return;
       }
+      if (providerMode || modelMode) {
+        console.clear();
+        if (providerMode && !providerApiMode) renderProviderMenu();
+        else if (providerMode && providerApiMode) renderProviderApiPrompt();
+        else if (modelMode) renderModelMenu();
+        else drawScreen(false);
+        return;
+      }
+      console.clear();
+      drawScreen(false);
     };
     output.on("resize", onResize);
 
     const maybeInitializeMcu = async () => {
       if (await isMcuWorkspaceSetup(workspace)) return;
 
+      let needRestoreRaw = false;
+      try {
+        if (input.isTTY && (input as any).isRaw) {
+          try { (input as any).setRawMode(false); needRestoreRaw = true; } catch {}
+        }
+      } catch {}
       const rl = readline.createInterface({ input, output });
       try {
         const answer = await new Promise<string>((resolve) => {
@@ -470,6 +589,7 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
         }
       } finally {
         rl.close();
+        if (needRestoreRaw) try { (input as any).setRawMode(true); } catch {}
       }
     };
 
@@ -512,7 +632,7 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
     function cycleCommandSelection(direction: 1 | -1): boolean {
       const query = commandFilter || inputBuffer.toLowerCase();
       if (!query.startsWith("/")) return false;
-      const matches = COMMANDS.filter(([command]) => command.startsWith(query));
+      const matches = fuzzyFilter(COMMANDS, query, ([command]) => command);
       if (matches.length === 0) return false;
 
       commandSelectionIndex =
@@ -539,15 +659,14 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
         if (key.name === "escape") {
           modelMode = false;
           modelIndex = 0;
-          console.clear();
+          output.write("\u001b[r");
+      console.clear();
           drawScreen(false);
           return;
         }
         if (key.name === "up") {
           if (modelLoading) return;
-          const count = modelOptions.filter((model) =>
-            model.id.toLowerCase().includes(modelSearch.toLowerCase()),
-          ).length;
+          const count = fuzzyFilter(modelOptions, modelSearch, (model) => `${model.id} ${model.label} ${model.description}`).length;
           if (count === 0) return;
           modelIndex = (modelIndex + count - 1) % count;
           renderModelMenu();
@@ -555,9 +674,7 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
         }
         if (key.name === "down") {
           if (modelLoading) return;
-          const count = modelOptions.filter((model) =>
-            model.id.toLowerCase().includes(modelSearch.toLowerCase()),
-          ).length;
+          const count = fuzzyFilter(modelOptions, modelSearch, (model) => `${model.id} ${model.label} ${model.description}`).length;
           if (count === 0) return;
           modelIndex = (modelIndex + 1) % count;
           renderModelMenu();
@@ -565,15 +682,14 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
         }
         if (key.name === "return" || key.name === "enter") {
           if (modelLoading || modelOptions.length === 0) return;
-          const filteredModels = modelOptions.filter((model) =>
-            model.id.toLowerCase().includes(modelSearch.toLowerCase()),
-          );
+          const filteredModels = fuzzyFilter(modelOptions, modelSearch, (model) => `${model.id} ${model.label} ${model.description}`);
           if (filteredModels.length === 0) return;
           const selected = filteredModels[modelIndex];
           await saveModelConfig(workspace, selected.id);
           modelMode = false;
           modelIndex = 0;
-          console.clear();
+          output.write("\u001b[r");
+      console.clear();
           console.log(`\n  Model selected: ${selected.label}\n`);
           inConversation = false;
           conversationBoxVisible = false;
@@ -593,7 +709,7 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
           }
           return;
         }
-        if (str && !key.ctrl && !key.meta && str.length === 1) {
+        if (str && !key.ctrl && !key.meta && str && str.length >= 1) {
           modelSearch += str;
           modelIndex = 0;
           modelScrollOffset = 0;
@@ -606,11 +722,16 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
         if (key.name === "escape") {
           providerMode = false;
           providerApiMode = false;
+          providerCustomStage = null;
+          providerTempBaseUrl = "";
+          providerTempCompat = "openai";
+          providerCompatIndex = 0;
           inputBuffer = "";
           cursorPos = 0;
           providerOverlayTop = 0;
           providerOverlayHeight = 0;
-          console.clear();
+          output.write("\u001b[r");
+      console.clear();
           drawScreen(false);
           return;
         }
@@ -623,28 +744,99 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
             providerIndex = (providerIndex + 1) % PROVIDERS.length;
             renderProviderMenu();
           } else if (key.name === "return" || key.name === "enter") {
-            providerApiMode = true;
+            const selected = PROVIDERS[providerIndex];
+            if (selected.id === "custom") {
+              providerCustomStage = "compat";
+              providerCompatIndex = 0;
+              providerTempCompat = "openai";
+              providerTempBaseUrl = "";
+              providerApiMode = true;
+              inputBuffer = "";
+              cursorPos = 0;
+              renderProviderCompatPrompt();
+            } else {
+              providerCustomStage = null;
+              providerApiMode = true;
+              inputBuffer = "";
+              cursorPos = 0;
+              renderProviderApiPrompt();
+            }
+          }
+          return;
+        }
+
+        if (providerCustomStage === "compat") {
+          if (key.name === "up") {
+            providerCompatIndex = (providerCompatIndex + 2 - 1) % 2;
+            renderProviderCompatPrompt();
+          } else if (key.name === "down") {
+            providerCompatIndex = (providerCompatIndex + 1) % 2;
+            renderProviderCompatPrompt();
+          } else if (key.name === "return" || key.name === "enter") {
+            providerTempCompat = providerCompatIndex === 0 ? "openai" : "anthropic";
+            providerCustomStage = "baseUrl";
+            inputBuffer = "";
+            cursorPos = 0;
+            renderProviderBaseUrlPrompt();
+          }
+          return;
+        }
+
+        if (providerCustomStage === "baseUrl") {
+          if (key.name === "return" || key.name === "enter") {
+            providerTempBaseUrl = inputBuffer.trim();
+            providerCustomStage = "apiKey";
             inputBuffer = "";
             cursorPos = 0;
             renderProviderApiPrompt();
+            return;
+          }
+          if (key.name === "backspace") {
+            if (cursorPos > 0) {
+              inputBuffer = inputBuffer.slice(0, cursorPos - 1) + inputBuffer.slice(cursorPos);
+              cursorPos--;
+              renderProviderBaseUrlPrompt();
+            }
+            return;
+          }
+          if (str && !key.ctrl && !key.meta && str && str.length >= 1) {
+            inputBuffer = inputBuffer.slice(0, cursorPos) + str + inputBuffer.slice(cursorPos);
+            cursorPos += str.length;
+            renderProviderBaseUrlPrompt();
           }
           return;
         }
 
         if (key.name === "return" || key.name === "enter") {
           const selected = PROVIDERS[providerIndex];
+          const isCustom = selected.id === "custom";
+          const finalBaseUrl = isCustom ? (providerTempBaseUrl || undefined) : selected.baseUrl;
+          const finalCompat = isCustom ? providerTempCompat : (selected as any).apiCompat;
           await saveProviderConfig(workspace, {
             provider: selected.id,
             apiKey: inputBuffer,
-            ...(selected.baseUrl ? { baseUrl: selected.baseUrl } : {}),
+            ...(finalBaseUrl ? { baseUrl: finalBaseUrl } : {}),
+            ...(finalCompat ? { apiCompat: finalCompat as any } : {}),
             updatedAt: new Date().toISOString(),
           });
+          try {
+            const cfg = await loadProviderConfig(workspace);
+            if (cfg) {
+              const models = await fetchAvailableModels(cfg);
+              output.write(`\n  ${createTheme(noColor).success(`Fetched ${models.length} models from provider.`)} \n`);
+            }
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            output.write(`\n  ${createTheme(noColor).warn(`Provider linked, but model discovery failed: ${msg}`)} \n`);
+          }
           providerMode = false;
           providerApiMode = false;
+          providerCustomStage = null;
           inputBuffer = "";
           cursorPos = 0;
-          console.clear();
-          console.log(`\n  Provider linked: ${selected.label}\n`);
+          output.write("\u001b[r");
+      console.clear();
+          console.log(`\n  Provider linked: ${selected.label}${isCustom ? ` (${finalCompat})` : ""}\n`);
           inConversation = false;
           conversationBoxVisible = false;
           if (conversationLayoutActive) {
@@ -664,9 +856,9 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
           return;
         }
 
-        if (str && !key.ctrl && !key.meta && str.length === 1) {
+        if (str && !key.ctrl && !key.meta && str && str.length >= 1) {
           inputBuffer = inputBuffer.slice(0, cursorPos) + str + inputBuffer.slice(cursorPos);
-          cursorPos++;
+          cursorPos += str.length;
           renderProviderApiPrompt();
         }
         return;
@@ -685,7 +877,8 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
           }
 
           inSetupMode = false;
-          console.clear();
+          output.write("\u001b[r");
+      console.clear();
           drawScreen(false);
           return;
         }
@@ -699,9 +892,9 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
           return;
         }
 
-        if (str && !key.ctrl && !key.meta && str.length === 1) {
+        if (str && !key.ctrl && !key.meta && str && str.length >= 1) {
           inputBuffer = inputBuffer.slice(0, cursorPos) + str + inputBuffer.slice(cursorPos);
-          cursorPos++;
+          cursorPos += str.length;
           drawScreen(false);
         }
         return;
@@ -733,6 +926,7 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
             output.write("\u001b[r");
             conversationLayoutActive = false;
           }
+          output.write("\u001b[r");
           console.clear();
           drawScreen(false);
           return;
@@ -758,7 +952,8 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
 
         if (task === "/help") {
           inConversation = true;
-          console.clear();
+          output.write("\u001b[r");
+      console.clear();
           console.log(renderHelp(noColor));
           console.log(renderUserMessage("/help", { noColor }));
           console.log("");
@@ -771,7 +966,8 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
         if (continuingConversation) {
           submitConversationInput(task);
         } else {
-          console.clear();
+          output.write("\u001b[r");
+      console.clear();
           conversationLayoutActive = false;
           conversationBoxVisible = false;
           drawConversationInput();
@@ -831,6 +1027,10 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
         if (cycleCommandSelection(1)) return;
       }
 
+      if (key.name === "tab") {
+        if (cycleCommandSelection(key.shift ? -1 : 1)) return;
+      }
+
       if (key.name === "left") {
         if (cursorPos > 0) {
           cursorPos--;
@@ -863,9 +1063,9 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
         return;
       }
 
-      if (str && !key.ctrl && !key.meta && str.length === 1) {
+      if (str && !key.ctrl && !key.meta && str && str.length >= 1) {
         inputBuffer = inputBuffer.slice(0, cursorPos) + str + inputBuffer.slice(cursorPos);
-        cursorPos++;
+        cursorPos += str.length;
         commandFilter = inputBuffer.startsWith("/") ? inputBuffer.toLowerCase() : "";
         commandSelectionIndex = 0;
         if (inConversation) drawConversationInput();
