@@ -1,10 +1,12 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { runAgentLoop } from "../src/core/agent-loop.js";
 import { MockModelClient } from "../src/model/mock-model.js";
 import type { ModelInput, ModelOutput } from "../src/model/model-client.js";
+
+const PATCH = "--- a/test.txt\n+++ b/test.txt\n@@ -1,1 +1,1 @@\n-old\n+new";
 
 describe("Agent Loop", () => {
   it("runs a multi-step loop and reaches completion", async () => {
@@ -54,9 +56,7 @@ describe("Agent Loop", () => {
           {
             id: "call_patch",
             name: "write_patch",
-            arguments: {
-              patch: "--- a/test.txt\n+++ b/test.txt\n@@ -1,1 +1,1 @@\n-old\n+new",
-            },
+            arguments: { patch: PATCH },
           },
         ],
       },
@@ -85,5 +85,58 @@ describe("Agent Loop", () => {
     expect(result.status).toBe("completed");
     expect(result.message).toContain("Understood, skipping edit.");
     expect(result.observations.some((o) => o.error?.includes("rejected"))).toBe(true);
+  });
+
+  it("fails closed when an approval-gated tool has no approval handler", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "rig-agent-test-"));
+    await writeFile(path.join(tmpDir, "test.txt"), "old\n");
+
+    const customModel = new MockModelClient([
+      {
+        message: "I will modify a file.",
+        toolCalls: [{ id: "call_patch", name: "write_patch", arguments: { patch: PATCH } }],
+      },
+      { message: "Done.", toolCalls: [] },
+    ]);
+
+    const result = await runAgentLoop(
+      {
+        task: "Modify file",
+        workspace: tmpDir,
+        autoApprove: false,
+        // No onApprovalRequest handler on purpose.
+      },
+      customModel,
+    );
+
+    expect(result.observations.some((o) => o.error?.includes("no approval handler"))).toBe(true);
+    // The workspace must be untouched.
+    expect(await readFile(path.join(tmpDir, "test.txt"), "utf8")).toBe("old\n");
+  });
+
+  it("applies the patch once approval is granted", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "rig-agent-test-"));
+    await writeFile(path.join(tmpDir, "test.txt"), "old\n");
+
+    const customModel = new MockModelClient([
+      {
+        message: "I will modify a file.",
+        toolCalls: [{ id: "call_patch", name: "write_patch", arguments: { patch: PATCH } }],
+      },
+      { message: "Done.", toolCalls: [] },
+    ]);
+
+    const result = await runAgentLoop(
+      {
+        task: "Modify file",
+        workspace: tmpDir,
+        autoApprove: false,
+        onApprovalRequest: async () => true,
+      },
+      customModel,
+    );
+
+    expect(result.filesChanged).toContain("test.txt");
+    expect(await readFile(path.join(tmpDir, "test.txt"), "utf8")).toBe("new\n");
   });
 });

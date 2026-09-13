@@ -16,7 +16,7 @@ RIG is a local-first command-line harness that lets AI agents inspect software r
 - 🌐 **Universal Model Support**: Works seamlessly with OpenAI (`OPENAI_API_KEY`), OpenRouter (`OPENROUTER_API_KEY`), or custom local endpoints (`RIG_API_BASE_URL`).
 - 💬 **Persistent CLI Conversation**: Keeps prompts and responses in terminal scrollback with a bottom-anchored input box and themed thinking indicator.
 - 🔌 **Optional MCU Scaffolding**: Generates Arduino and ESP32 project files only when embedded tooling is selected.
-- 📦 **Dual Package Design**: Use as a global CLI (`npx rig`) or import directly into your TypeScript/Node.js applications as a library SDK.
+- 📦 **Dual Package Design**: Use as a global CLI (`npx rig-agent-harness`) or import directly into your TypeScript/Node.js applications as a library SDK.
 
 ---
 
@@ -123,20 +123,48 @@ rig run "Fix failing unit tests in the auth module" --yes
 ### Other Commands
 
 ```bash
-rig review   # Review current workspace changes
-rig resume   # Resume a saved session
-rig status   # Show workspace and session status
-rig log      # Inspect a saved session log
-rig config   # View RIG configuration
+rig config   # Show the resolved provider, model, limits and approvals
+rig log      # List saved sessions, or inspect one session's event log
+rig resume   # Resume the most recent unfinished session
+rig review   # Review the current workspace changes
+rig status   # Show workspace and provider/model status
+```
+
+`rig log` lists every recorded session; pass a session id (or `last`) to inspect its
+event timeline and patch artifacts:
+
+```bash
+rig log
+rig log last
+rig log 2026-09-13T09-36-03-533Z-fix-the-build
+```
+
+`rig resume` prints what the previous attempt did, then continues the original task in
+the same session. Use `--summary` to inspect without continuing:
+
+```bash
+rig resume
+rig resume --summary
+rig resume 2026-09-13T09-36-03-533Z-fix-the-build
+```
+
+`rig review` feeds the current diff to the agent and asks for severity-ranked findings:
+
+```bash
+rig review                 # unstaged changes
+rig review --staged        # staged changes
+rig review --file src/api.ts
 ```
 
 Inside interactive mode:
 - `/provider` opens the provider selection popup.
+- `/model` opens the model picker.
+- `/status` prints the current provider and model.
 - `/help` shows available commands.
 - `/clear` resets the current conversation.
 - `/exit` or `/quit` exits RIG.
 
-When RIG is working, a themed animated spinner is shown. Risky file writes and shell commands can request approval unless `--yes` is used.
+When RIG is working, a themed animated spinner is shown. Risky file writes and shell commands can request approval unless `--yes` is used. Piping into `rig` (or running it in CI) skips the TUI and runs a plain line-oriented REPL instead.
 
 ### CLI Options
 - `-y, --yes`: Auto-approve all write and verification actions.
@@ -172,6 +200,14 @@ console.log("Status:", result.status);
 console.log("Summary:", result.message);
 console.log("Files changed:", result.filesChanged);
 ```
+
+### Approval semantics
+
+Tools classified as `workspace_write`, `shell_write`, `shell_verify`, `network` or
+`dangerous` require approval. RIG **fails closed**: if a tool needs approval, `autoApprove`
+is off, and no `onApprovalRequest` handler was supplied, the action is refused and the
+refusal is reported back to the model instead of being executed. Pass `onApprovalRequest`
+to decide per action, or set `autoApprove: true` to opt out of prompting entirely.
 
 ---
 

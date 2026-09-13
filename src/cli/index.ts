@@ -7,6 +7,7 @@ import { initializeMcuWorkspace, isMcuWorkspaceSetup } from "../config/mcu-setup
 import {
   PROVIDERS,
   fetchAvailableModels,
+  loadModelConfig,
   loadProviderConfig,
   saveModelConfig,
   saveProviderConfig,
@@ -23,13 +24,28 @@ import {
   renderHelp,
   renderInputBox,
   renderSetupScreen,
+  renderStatus,
   renderTurn,
   renderUserMessage,
   renderWelcomeScreen,
 } from "./render.js";
 import { fuzzyFilter } from "./fuzzy.js";
+import {
+  buildReviewTask,
+  collectConfig,
+  collectReviewDiff,
+  collectSessionDetail,
+  collectSessions,
+  findResumableSession,
+  renderConfig,
+  renderReviewHeader,
+  renderSessionDetail,
+  renderSessionList,
+} from "./commands.js";
+import { VERSION } from "../version.js";
 
 const COMMANDS: Array<[string, string]> = [
+  ["/status", "Show provider & model status"],
   ["/provider", "Link an AI provider"],
   ["/model", "Choose an AI model"],
   ["/help", "Show available commands"],
@@ -90,6 +106,7 @@ export async function runTask(
     maxSteps?: number;
     autoApprove?: boolean;
     noColor?: boolean;
+    resumeSessionId?: string;
   } = {},
 ): Promise<AgentResult> {
   const workspace = path.resolve(options.workspace || process.cwd());
@@ -100,12 +117,36 @@ export async function runTask(
     model: options.model,
     maxSteps: options.maxSteps,
     autoApprove: options.autoApprove,
+    resumeSessionId: options.resumeSessionId,
     onApprovalRequest: async (req) => requestTerminalApproval(req, options.noColor),
   });
 }
 
 export function runInteractive(workspace = process.cwd(), noColor = false): Promise<void> {
   return new Promise<void>(async (resolve) => {
+    // Non-interactive stdin (pipes, CI, `echo ... | rig`): run a plain
+    // line-oriented REPL and never paint the full-screen TUI.
+    if (!input.isTTY) {
+      const rl = readline.createInterface({ input, output });
+      try {
+        for await (const line of rl) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          if (trimmed === "/quit" || trimmed === "/exit") break;
+          if (trimmed === "/help") {
+            console.log(renderHelp(noColor));
+            continue;
+          }
+          const result = await runTask(trimmed, { workspace, noColor });
+          console.log(renderAsk(result, { noColor }));
+        }
+      } finally {
+        rl.close();
+        resolve();
+      }
+      return;
+    }
+
     const isAlreadySetup = await isWorkspaceSetup(workspace);
     let inSetupMode = !isAlreadySetup;
     let inputBuffer = "";
@@ -137,6 +178,35 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
     let modelScrollOffset = 0;
     let commandFilter = "";
     let commandSelectionIndex = 0;
+    let currentModel: string | undefined = undefined;
+
+    async function refreshCurrentModel(): Promise<void> {
+      try {
+        const providerConfig = await loadProviderConfig(workspace);
+        const modelFromFile = await loadModelConfig(workspace);
+        currentModel = modelFromFile || providerConfig?.model || process.env["RIG_MODEL"] || undefined;
+      } catch { currentModel = undefined; }
+    }
+    // initial load (non-blocking, then redraw)
+    refreshCurrentModel().then(() => { if (!inConversation && !isExiting && !inSetupMode) drawScreen(false); }).catch(() => {});
+
+    async function printStatus(): Promise<void> {
+      const provider = await loadProviderConfig(workspace);
+      const model = (await loadModelConfig(workspace)) || provider?.model || process.env["RIG_MODEL"];
+      const out = renderStatus(workspace, provider as any, model, noColor);
+      // print in scrollable area so it stays in history
+      if (inConversation) {
+        // ensure we are in scroll region before printing
+        output.write("\u001b[r");
+        console.log(out);
+        drawConversationInput();
+      } else {
+        output.write("\u001b[r");
+        console.clear();
+        console.log(out);
+        drawScreen(false);
+      }
+    }
 
     function drawScreen(isGlitch = false) {
       if (inConversation || isExiting) return;
@@ -158,7 +228,7 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
         inputBuffer,
         cursorPos,
         isGlitch,
-        { noColor },
+        { noColor, modelName: currentModel },
       );
       output.write(`\u001b[H\u001b[J${screenContent}`);
       output.write(`\u001b[${cursorRow};${cursorCol}H\u001b[?25h`);
@@ -167,22 +237,26 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
 
     function drawConversationInput() {
       if (!inConversation || isExiting) return;
+
+      // Force scroll layout BEFORE rendering to avoid shifting lines under us
+      if (!conversationLayoutActive) {
+        const rows = Math.max(24, output.rows || 30);
+        conversationContentBottom = Math.max(1, rows - 8);
+        conversationBoxTop = conversationContentBottom + 1;
+        output.write(`\u001b[1;${conversationContentBottom}r`);
+        output.write(`\u001b[${conversationContentBottom};1H`);
+        conversationLayoutActive = true;
+      }
+
       const box = renderInputBox(
         inputBuffer,
         cursorPos,
         output.columns || 100,
         noColor,
         Math.floor((output.columns || 100) * 0.9),
+        currentModel,
       );
       const firstRender = !conversationBoxVisible;
-
-      if (!conversationLayoutActive) {
-        const rows = Math.max(24, output.rows || 30);
-        conversationContentBottom = Math.max(1, rows - 7);
-        conversationBoxTop = conversationContentBottom + 1;
-        output.write(`\u001b[1;${conversationContentBottom}r`);
-        conversationLayoutActive = true;
-      }
 
       if (firstRender) {
         for (const [index, line] of box.lines.entries()) {
@@ -190,9 +264,9 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
         }
         conversationBoxVisible = true;
       } else {
-        output.write(
-          `\u001b[${conversationBoxTop + box.promptRowOffset};1H\u001b[2K${box.lines[box.promptRowOffset]}`,
-        );
+        for (const [index, line] of box.lines.entries()) {
+          output.write(`\u001b[${conversationBoxTop + index};1H\u001b[2K${line}`);
+        }
       }
       output.write(
         `\u001b[${conversationBoxTop + box.promptRowOffset};${box.promptCol + cursorPos}H\u001b[?25h`,
@@ -271,7 +345,7 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
 
     function submitConversationInput(task: string) {
       if (!conversationBoxVisible) return;
-      for (let index = 0; index < 7; index++) {
+      for (let index = 0; index < 8; index++) {
         output.write(`\u001b[${conversationBoxTop + index};1H\u001b[2K`);
       }
       output.write(`\u001b[${conversationContentBottom};1H`);
@@ -540,6 +614,8 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
         inConversation = false;
         conversationBoxVisible = false;
         if (conversationLayoutActive) {
+          // move terminal cursor to the active scrolling area before clear
+          output.write(`\u001b[${conversationContentBottom};1H`);
           output.write("\u001b[r");
           conversationLayoutActive = false;
         }
@@ -593,28 +669,13 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
       }
     };
 
-    if (!input.isTTY) {
-      const rl = readline.createInterface({ input, output });
-      try {
-        for await (const line of rl) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed === "/quit" || trimmed === "/exit") break;
-          const result = await runTask(trimmed, { workspace, noColor });
-          console.log(renderAsk(result, { noColor }));
-        }
-      } finally {
-        rl.close();
-        resolve();
-      }
-      return;
-    }
-
     readline.emitKeypressEvents(input);
     input.setRawMode(true);
 
     const cleanup = () => {
       isExiting = true;
       if (conversationLayoutActive) {
+        output.write(`\u001b[${conversationContentBottom};1H`);
         output.write("\u001b[r");
         conversationLayoutActive = false;
       }
@@ -686,6 +747,7 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
           if (filteredModels.length === 0) return;
           const selected = filteredModels[modelIndex];
           await saveModelConfig(workspace, selected.id);
+          await refreshCurrentModel();
           modelMode = false;
           modelIndex = 0;
           output.write("\u001b[r");
@@ -694,6 +756,7 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
           inConversation = false;
           conversationBoxVisible = false;
           if (conversationLayoutActive) {
+            output.write(`\u001b[${conversationContentBottom};1H`);
             output.write("\u001b[r");
             conversationLayoutActive = false;
           }
@@ -837,9 +900,11 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
           output.write("\u001b[r");
       console.clear();
           console.log(`\n  Provider linked: ${selected.label}${isCustom ? ` (${finalCompat})` : ""}\n`);
+          await refreshCurrentModel();
           inConversation = false;
           conversationBoxVisible = false;
           if (conversationLayoutActive) {
+            output.write(`\u001b[${conversationContentBottom};1H`);
             output.write("\u001b[r");
             conversationLayoutActive = false;
           }
@@ -923,6 +988,7 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
           commandSelectionIndex = 0;
           conversationBoxVisible = false;
           if (conversationLayoutActive) {
+            output.write(`\u001b[${conversationContentBottom};1H`);
             output.write("\u001b[r");
             conversationLayoutActive = false;
           }
@@ -947,6 +1013,11 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
           commandFilter = "";
           commandSelectionIndex = 0;
           await beginModelCommand();
+          return;
+        }
+
+        if (task === "/status") {
+          await printStatus();
           return;
         }
 
@@ -1081,7 +1152,7 @@ export const program = new Command();
 program
   .name("rig")
   .description("A terminal-native AI harness for autonomous agents.")
-  .version("0.1.0")
+  .version(VERSION)
   .option("--no-color", "disable terminal styling")
   .option("--json", "print machine-readable output")
   .option("-y, --yes", "auto-approve all write and verify actions")
@@ -1137,15 +1208,158 @@ program
     }
   });
 
-for (const [name, description] of [
-  ["review", "Review the current workspace changes"],
-  ["resume", "Resume a saved session"],
-  ["status", "Show workspace and session status"],
-  ["log", "Inspect a saved session log"],
-  ["config", "View RIG configuration"],
-] as const) {
-  program.command(name).description(description);
-}
+program
+  .command("status")
+  .description("Show workspace and provider/model status")
+  .option("--cwd <path>", "workspace to inspect", process.cwd())
+  .action(async (options, command) => {
+    try {
+      const global = command.parent?.opts() ?? {};
+      const noColor = global.color === false;
+      const ws = path.resolve(options.cwd);
+      const provider = await loadProviderConfig(ws);
+      const model = (await loadModelConfig(ws)) || provider?.model || process.env["RIG_MODEL"];
+      if (global.json) {
+        const safeProvider = provider ? { provider: provider.provider, baseUrl: provider.baseUrl ?? null, apiCompat: (provider as any).apiCompat ?? null, hasKey: Boolean(provider.apiKey) } : null;
+        console.log(JSON.stringify({ workspace: ws, provider: safeProvider, model: model ?? null }, null, 2));
+      } else {
+        console.log(renderStatus(ws, provider as any, model ?? undefined, noColor));
+      }
+    } catch (error) {
+      console.error(renderError(error, false));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("config")
+  .description("Show the resolved RIG configuration for this workspace")
+  .option("--cwd <path>", "workspace to inspect", process.cwd())
+  .action(async (options, command) => {
+    const global = command.parent?.opts() ?? {};
+    const noColor = global.color === false;
+    try {
+      const report = await collectConfig(path.resolve(options.cwd));
+      console.log(global.json ? JSON.stringify(report, null, 2) : renderConfig(report, noColor));
+    } catch (error) {
+      console.error(renderError(error, noColor));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("log")
+  .description("List saved sessions, or inspect one session's event log")
+  .argument("[sessionId]", "session to inspect, or 'last' for the most recent")
+  .option("--cwd <path>", "workspace to inspect", process.cwd())
+  .action(async (sessionId, options, command) => {
+    const global = command.parent?.opts() ?? {};
+    const noColor = global.color === false;
+    try {
+      const ws = path.resolve(options.cwd);
+
+      if (!sessionId) {
+        const sessions = await collectSessions(ws);
+        console.log(global.json ? JSON.stringify(sessions, null, 2) : renderSessionList(sessions, noColor));
+        return;
+      }
+
+      const resolved = sessionId === "last" ? (await collectSessions(ws))[0]?.id : sessionId;
+      if (!resolved) {
+        console.error(renderError(new Error("No saved sessions found in this workspace."), noColor));
+        process.exitCode = 1;
+        return;
+      }
+
+      const detail = await collectSessionDetail(ws, resolved);
+      if (!detail) {
+        console.error(renderError(new Error(`Session '${resolved}' was not found in ${ws}.`), noColor));
+        process.exitCode = 1;
+        return;
+      }
+
+      console.log(global.json ? JSON.stringify(detail, null, 2) : renderSessionDetail(detail, noColor));
+    } catch (error) {
+      console.error(renderError(error, noColor));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("resume")
+  .description("Resume the most recent unfinished session")
+  .argument("[sessionId]", "session to resume (defaults to the most recent unfinished one)")
+  .option("--cwd <path>", "workspace to continue in", process.cwd())
+  .option("--summary", "only show what the session did, without continuing it")
+  .action(async (sessionId, options, command) => {
+    const global = command.parent?.opts() ?? {};
+    const noColor = global.color === false;
+    try {
+      const ws = path.resolve(options.cwd);
+      const session = await findResumableSession(ws, sessionId);
+      if (!session) {
+        console.error(renderError(new Error("No saved session to resume in this workspace."), noColor));
+        process.exitCode = 1;
+        return;
+      }
+
+      const detail = await collectSessionDetail(ws, session.id);
+      if (detail) console.log(renderSessionDetail(detail, noColor));
+      if (options.summary) return;
+
+      console.log(`  ${createTheme(noColor).muted("Continuing session...")}\n`);
+      const result = await runTask(session.task, {
+        workspace: ws,
+        model: global.model,
+        maxSteps: global.maxSteps ? parseInt(global.maxSteps, 10) : undefined,
+        autoApprove: global.yes,
+        noColor,
+        resumeSessionId: session.id,
+      });
+      console.log(renderAsk(result, { noColor, json: global.json }));
+    } catch (error) {
+      console.error(renderError(error, noColor));
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("review")
+  .description("Review the current workspace changes")
+  .option("--cwd <path>", "workspace to review", process.cwd())
+  .option("--staged", "review staged changes instead of unstaged ones")
+  .option("--file <path>", "review a single file")
+  .action(async (options, command) => {
+    const global = command.parent?.opts() ?? {};
+    const noColor = global.color === false;
+    try {
+      const ws = path.resolve(options.cwd);
+      const review = await collectReviewDiff(ws, { staged: options.staged, file: options.file });
+
+      if (!review.diff) {
+        console.log(
+          global.json
+            ? JSON.stringify({ ...review, message: "No changes to review." }, null, 2)
+            : `\n  ${createTheme(noColor).warn("No changes to review.")}\n`,
+        );
+        return;
+      }
+
+      if (!global.json) console.log(renderReviewHeader(review, noColor));
+
+      const result = await runTask(buildReviewTask(review), {
+        workspace: ws,
+        model: global.model,
+        maxSteps: global.maxSteps ? parseInt(global.maxSteps, 10) : undefined,
+        autoApprove: global.yes,
+        noColor,
+      });
+      console.log(renderAsk(result, { noColor, json: global.json }));
+    } catch (error) {
+      console.error(renderError(error, noColor));
+      process.exitCode = 1;
+    }
+  });
 
 // Unconditionally parse CLI arguments when executed
 program.parseAsync(process.argv).catch((err) => {

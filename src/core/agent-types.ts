@@ -14,6 +14,8 @@ export type AgentInput = {
   maxSteps?: number;
   autoApprove?: boolean;
   model?: string;
+  /** Continue an existing session instead of starting a new one. */
+  resumeSessionId?: string;
   onTurn?: (event: AgentStepEvent) => void;
   onApprovalRequest?: (request: ApprovalRequest) => Promise<boolean>;
 };

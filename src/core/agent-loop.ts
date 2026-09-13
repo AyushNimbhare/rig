@@ -3,8 +3,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { ContextEngine } from "../context/context-engine.js";
 import { loadModelConfig, loadProviderConfig, type ProviderConfig } from "../config/provider-setup.js";
 import { MockModelClient } from "../model/mock-model.js";
-import type { ChatMessage, ModelClient } from "../model/model-client.js";
 import { OpenAIClient } from "../model/openai-client.js";
+import { PiModelClient } from "../model/pi-model-client.js";
+import type { ChatMessage, ModelClient } from "../model/model-client.js";
 import { SafetyPolicy } from "../safety/policy.js";
 import { gitDiff, gitStatus } from "../tools/git.js";
 import { listFiles, readFileTool, searchText } from "../tools/read-only.js";
@@ -51,7 +52,8 @@ export function createModelClient(modelName?: string, providerConfig?: ProviderC
     }
   }
 
-  return new MockModelClient();
+  // Use PiModelClient for offline pi-style agent loop
+  return new PiModelClient(modelName || "gpt-4o-mini");
 }
 
 export async function runAgentLoop(input: AgentInput, clientOverride?: ModelClient): Promise<AgentResult> {

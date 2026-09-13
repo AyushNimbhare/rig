@@ -11,6 +11,7 @@ import type { AgentInput, AgentResult, ToolObservation } from "./agent-types.js"
 import { SessionManager } from "./session.js";
 import { MockModelClient } from "../model/mock-model.js";
 import { OpenAIClient } from "../model/openai-client.js";
+import { PiModelClient } from "../model/pi-model-client.js";
 import type { ChatMessage, ModelClient } from "../model/model-client.js";
 import { loadModelConfig, loadProviderConfig, type ProviderConfig } from "../config/provider-setup.js";
 
@@ -33,7 +34,9 @@ export async function runPiAgentLoop(
   const workspace = path.resolve(input.workspace || process.cwd());
   const maxSteps = input.maxSteps ?? 30;
   const sessions = new SessionManager(workspace);
-  const session = await sessions.create(input.task, workspace);
+  const session = input.resumeSessionId
+    ? (await sessions.resume(input.resumeSessionId)) ?? (await sessions.create(input.task, workspace))
+    : await sessions.create(input.task, workspace);
 
   const contextEngine = new ContextEngine(workspace);
   const wsContext = await contextEngine.buildInitialContext();
@@ -89,7 +92,8 @@ export async function runPiAgentLoop(
         return new MockModelClient();
       }
     }
-    return new MockModelClient();
+    // Use PiModelClient for offline pi-style agent loop
+    return new PiModelClient(modelName || "gpt-4o-mini");
   }
 
   const providerConfig = await loadProviderConfig(workspace);
@@ -209,35 +213,56 @@ export async function runPiAgentLoop(
       }
 
       if (classification.requiresApproval && !input.autoApprove) {
-        let approved = true;
-        if (input.onApprovalRequest) {
-          approved = await input.onApprovalRequest({
-            tool: toolCall.name,
-            arguments: parsedArgs,
-            risk: classification.risk,
-            reason: classification.warning,
+        if (input.onTurn) {
+          input.onTurn({
+            type: "approval_requested",
+            request: {
+              tool: toolCall.name,
+              arguments: parsedArgs,
+              risk: classification.risk,
+              reason: classification.warning,
+            },
           });
         }
+
+        // Fail closed: without a handler we cannot obtain consent, so the
+        // action is refused rather than executed unattended.
+        const approved = input.onApprovalRequest
+          ? await input.onApprovalRequest({
+              tool: toolCall.name,
+              arguments: parsedArgs,
+              risk: classification.risk,
+              reason: classification.warning,
+            })
+          : false;
 
         await sessions.record(session.id, {
           type: "approval_resolved",
           tool: toolCall.name,
           approved,
+          ...(input.onApprovalRequest ? {} : { reason: "no_approval_handler" }),
         });
 
+        if (input.onTurn) {
+          input.onTurn({ type: "approval_resolved", approved });
+        }
+
         if (!approved) {
+          const reason = input.onApprovalRequest
+            ? "User rejected permission to run this action."
+            : `Blocked '${toolCall.name}': this action requires approval but no approval handler was supplied.`;
           const observation: ToolObservation = {
             tool: toolCall.name,
             ok: false,
             result: null,
-            error: "User rejected permission to run this action.",
+            error: reason,
           };
           allObservations.push(observation);
           messages.push({
             role: "tool",
             name: toolCall.name,
             tool_call_id: toolCall.id,
-            content: JSON.stringify({ error: "User rejected approval for this tool call." }),
+            content: JSON.stringify({ error: reason }),
           });
           continue;
         }
@@ -317,7 +342,7 @@ export async function runPiAgentLoop(
 
   // Max steps exceeded - pi-style: agent stopped
   session.status = "failed";
-  await sessions.complete(session);
+  await sessions.complete(session, "failed");
 
   return {
     status: "max_steps_exceeded",

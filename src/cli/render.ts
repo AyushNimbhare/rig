@@ -1,5 +1,6 @@
 import chalk, { Chalk } from "chalk";
 import type { AgentResult, ToolObservation } from "../core/agent-types.js";
+import { VERSION } from "../version.js";
 
 export type AskResult = {
   message: string;
@@ -172,7 +173,7 @@ export function renderTopBar(workspace: string, noColor: boolean, columns: numbe
 
   const traffic = `${theme.trafficRed("●")} ${theme.trafficYellow("●")} ${theme.trafficGreen("●")}`;
   const pillTraffic = `${theme.border("[")} ${traffic} ${theme.border("]")}`;
-  const pillBrand = `${theme.border("[")} ${theme.brand("rig")} ${theme.muted("v0.1.0")} ${theme.border("]")}`;
+  const pillBrand = `${theme.border("[")} ${theme.brand("rig")} ${theme.muted(`v${VERSION}`)} ${theme.border("]")}`;
   const pillWs = `${theme.border("[")} ${theme.accent(ws)} ${theme.border("]")}`;
   const pillPlus = `${theme.border("[")} ${theme.accent("+")} ${theme.border("]")}`;
   const leftGroup = `${pillTraffic}  ${pillBrand}  ${pillWs}  ${pillPlus}`;
@@ -235,6 +236,7 @@ export function renderInputBox(
   columns: number,
   noColor = false,
   boxWidthOverride?: number,
+  modelName?: string,
 ): InputBoxRender {
   const theme = createTheme(noColor);
   const boxWidth = boxWidthOverride ?? Math.min(84, Math.max(56, columns - 12));
@@ -324,6 +326,12 @@ export function renderInputBox(
   const footerText = `${theme.muted("Type")} ${theme.brand("/help")} ${theme.muted("for commands")}  ${theme.dim("•")}  ${theme.brand("/clear")} ${theme.muted("to reset")}  ${theme.dim("•")}  ${theme.brand("/exit")} ${theme.muted("to quit")}`;
   const footerLine = center(footerText, columns);
 
+  // Model status line shown under the textbox
+  const statusLeft = theme.muted("model") + " " + (modelName ? theme.brand(modelName) : theme.warn("not configured"));
+  const statusRight = theme.muted("/status for details") ;
+  const statusGap = Math.max(1, columns - visibleLength(statusLeft) - visibleLength(statusRight) - 2);
+  const modelLine = " " + statusLeft + " ".repeat(statusGap) + statusRight;
+
   const lines = [
     topBorder,
     headerLine,
@@ -331,6 +339,7 @@ export function renderInputBox(
     inputLine,
     bottomBorder,
     "",
+    modelLine,
     footerLine,
   ];
 
@@ -442,7 +451,7 @@ export function renderSetupScreen(
   for (const logoLine of logo) {
     lines.push(center(logoLine, columns));
   }
-  lines.push(center(theme.muted("v0.1.0"), columns));
+  lines.push(center(theme.muted(`v${VERSION}`), columns));
   lines.push(center(theme.accent(ws), columns));
 
   for (let r = 0; r < bottomScanlineCount; r++) {
@@ -470,12 +479,35 @@ export type WelcomeScreenResult = {
   cursorCol: number;
 };
 
+export function renderStatus(
+  workspace: string,
+  provider: { provider: string; baseUrl?: string; apiCompat?: string } | undefined,
+  model: string | undefined,
+  noColor = false,
+): string {
+  const theme = createTheme(noColor);
+  const ws = shortPath(workspace);
+  const providerLabel = provider ? `${provider.provider}${provider.baseUrl ? ` (${provider.baseUrl})` : ""}${provider.apiCompat ? ` [${provider.apiCompat}]` : ""}` : "not configured";
+  const modelLabel = model ?? "not configured";
+  return [
+    "",
+    `  ${theme.brand("RIG STATUS")}`,
+    `  ${theme.dim("─".repeat(40))}`,
+    `    ${theme.accent("workspace")}  ${theme.text(ws)}`,
+    `    ${theme.accent("provider")}   ${provider ? theme.text(providerLabel) : theme.warn(providerLabel)}`,
+    `    ${theme.accent("model")}      ${model ? theme.text(modelLabel) : theme.warn(modelLabel)}`,
+    "",
+    `  ${theme.dim(provider ? "Use /provider to switch provider, /model to switch model." : "Use /provider to link a provider, then /model to pick a model.")}`,
+    "",
+  ].join("\n");
+}
+
 export function renderWelcomeScreen(
   workspace: string,
   inputBuffer: string,
   cursorPos: number,
   isGlitch: boolean,
-  options: { noColor?: boolean } = {},
+  options: { noColor?: boolean; modelName?: string } = {},
 ): WelcomeScreenResult {
   const theme = createTheme(options.noColor);
   const { columns, rows } = getTerminalDimensions();
@@ -490,7 +522,7 @@ export function renderWelcomeScreen(
   // 2. Space above logo (scanlines)
   const logo = renderLogo(isGlitch, Boolean(options.noColor));
   const logoHeight = logo.length + 2;
-  const boxHeight = 7;
+  const boxHeight = 8;
   const totalContentHeight = 2 + logoHeight + boxHeight;
   const availablePadding = Math.max(2, rows - totalContentHeight);
 
@@ -505,7 +537,7 @@ export function renderWelcomeScreen(
   for (const logoLine of logo) {
     lines.push(center(logoLine, columns));
   }
-  lines.push(center(theme.muted("v0.1.0"), columns));
+  lines.push(center(theme.muted(`v${VERSION}`), columns));
   lines.push(center(theme.accent(ws), columns));
 
   // 4. Space between logo and box (scanlines)
@@ -515,7 +547,7 @@ export function renderWelcomeScreen(
 
   // 5. Input Box
   const startBoxRowIndex = lines.length;
-  const box = renderInputBox(inputBuffer, cursorPos, columns, Boolean(options.noColor));
+  const box = renderInputBox(inputBuffer, cursorPos, columns, Boolean(options.noColor), undefined, options.modelName);
   lines.push(...box.lines);
 
   const cursorRow = startBoxRowIndex + box.promptRowOffset + 1;
@@ -587,6 +619,7 @@ export function renderHelp(noColor = false): string {
     `  ${theme.brand("RIG COMMANDS")}`,
     `  ${theme.dim("─".repeat(40))}`,
     `    ${theme.accent("/help")}     ${theme.muted("Show this help message")}`,
+    `    ${theme.accent("/status")}   ${theme.muted("Show provider & model status")}`,
     `    ${theme.accent("/provider")} ${theme.muted("Link an AI model provider")}`,
     `    ${theme.accent("/model")}    ${theme.muted("Choose an AI model")}`,
     `    ${theme.accent("/clear")}    ${theme.muted("Reset conversation and screen")}`,

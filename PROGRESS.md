@@ -2,8 +2,8 @@
 
 > **Project**: RIG (Terminal-Native AI Harness for Autonomous Agents)  
 > **Repository**: `/Users/ayushnimbhare/Files/Projects/rig`  
-> **Status**: Core runtime, interactive conversation UX, provider linking, and MCU scaffolding complete • Review/resume command implementations remain roadmap work  
-> **Last Updated**: August 30, 2026  
+> **Status**: Core runtime, interactive conversation UX, provider linking, session inspection/resume, code review and MCU scaffolding complete  
+> **Last Updated**: September 13, 2026  
 
 ---
 
@@ -107,8 +107,11 @@ rig/
 ├── tsconfig.json                    # TypeScript compiler configuration
 ├── src/
 │   ├── index.ts                     # Root SDK entrypoint
+│   ├── version.ts                   # Version resolved from package.json
 │   ├── cli/
 │   │   ├── index.ts                 # CLI entrypoint & interactive REPL engine
+│   │   ├── commands.ts              # rig config / log / resume / review commands
+│   │   ├── fuzzy.ts                 # Fuzzy matching for pickers and slash commands
 │   │   └── render.ts                # Cyberpunk TUI renderer & theme engine
 │   ├── config/
 │   │   ├── workspace-setup.ts       # First-run onboarding & workspace setup
@@ -117,7 +120,8 @@ rig/
 │   ├── context/
 │   │   └── context-engine.ts        # Workspace context & system prompt builder
 │   ├── core/
-│   │   ├── agent-loop.ts            # Iterative agent execution loop
+│   │   ├── agent-loop.ts            # Public agent loop entrypoint
+│   │   ├── agent-loop-adapter.ts    # pi-style iterative execution loop
 │   │   ├── agent-types.ts           # Core types, events, and results
 │   │   ├── errors.ts                # Structured error classes
 │   │   ├── events.ts                # Session event schemas
@@ -125,6 +129,7 @@ rig/
 │   ├── model/
 │   │   ├── message-types.ts         # Message schema types
 │   │   ├── mock-model.ts            # Deterministic mock client
+│   │   ├── pi-model-client.ts       # Offline pi-style fallback client
 │   │   ├── model-client.ts          # Universal ModelClient interface
 │   │   └── openai-client.ts         # OpenAI/OpenRouter client
 │   ├── safety/
@@ -137,7 +142,8 @@ rig/
 │       ├── tool-types.ts            # Tool & ToolContext interfaces
 │       └── write-patch.ts           # write_patch unified diff applier
 ├── tests/
-│   ├── agent-loop.test.ts           # Multi-step loop & approval tests
+│   ├── agent-loop.test.ts           # Multi-step loop, approval & fail-closed tests
+│   ├── commands.test.ts             # config / log / resume / review & version tests
 │   ├── policy.test.ts               # Safety risk classification tests
 │   ├── render.test.ts               # Box geometry & cursor calculation tests
 │   ├── run-shell.test.ts            # Shell runner execution & timeout tests
@@ -145,7 +151,7 @@ rig/
 │   ├── setup.test.ts                # Workspace onboarding & gitignore tests
 │   ├── mcu-setup.test.ts             # MCU scaffolding tests
 │   ├── provider-setup.test.ts        # Provider persistence tests
-│   ├── tools.test.ts                # Tool registry lookup tests
+│   ├── tools.test.ts                # Tool registry & JSON-schema contract tests
 │   └── write-patch.test.ts          # Patch parsing & boundary security tests
 └── dist/                            # Compiled production bundles & .d.ts types
 ```
@@ -157,21 +163,40 @@ rig/
 | Check | Result | Details |
 |---|---|---|
 | **TypeScript Compilation** | ✅ **Clean (0 errors)** | `tsc --noEmit` |
-| **Unit & Integration Tests** | ✅ **24 / 24 Passing** | `vitest run` (10 test suites) |
-| **Production Build** | ✅ **Built in ~60ms** | `tsup` ESM bundles + `.d.ts` types |
-| **npm Package Dry Run** | ✅ **73.7 kB unpacked** | Whitelisted `dist`, `README`, `LICENSE` |
+| **Unit & Integration Tests** | ✅ **44 / 44 Passing** | `vitest run` (11 test suites) |
+| **Production Build** | ✅ **Built successfully** | `tsup` ESM bundles + `.d.ts` types |
+| **npm Package Dry Run** | ✅ **Whitelisted `dist`, `README`, `LICENSE`** | Version resolved from `package.json` at runtime |
 | **Global CLI (`npm link`)** | ✅ **Verified** | Works globally across any local directory |
 
 ---
 
-## 6. Next Steps / Remaining Roadmap
+## 6. Recently Completed Work
 
-1. **Phase 4 — Code Review Workflow (`rig review`)**:
-   - Inspect staged / unstaged diffs and output severity-ranked findings (P1/P2/P3) for bugs, security risks, or missing test coverage.
-2. **Phase 5 — Session Resumability (`rig resume`, `rig status`, `rig log`)**:
-   - Resume stopped or interrupted sessions from `.rig/sessions/`.
-   - Inspect event logs, patch histories, and summaries.
-3. **Live Token Streaming**:
+1. **Zod 4 tool-schema generation** — `ToolRegistry.toJsonSchemas()` previously read
+   `_def.typeName`, which Zod 4 removed, causing *every* tool parameter to be emitted as
+   `required`. Schemas are now produced via Zod's native `toJSONSchema()` in `input` mode,
+   with a Zod 3-aware hand-rolled fallback. Only genuinely mandatory parameters are
+   required (`run_shell` → `command`, `write_patch` → `patch`, ...).
+2. **Single-sourced version** — `src/version.ts` resolves the version from the nearest
+   `package.json`, so `--version`, the top bar and both welcome screens can no longer drift
+   from the published package.
+3. **Non-TTY safety** — piping into `rig` or running it in CI now uses a plain
+   line-oriented REPL instead of painting (and then discarding) the full-screen TUI.
+4. **Fail-closed approvals** — when a tool requires approval, `autoApprove` is off and no
+   `onApprovalRequest` handler was supplied, the action is refused and reported to the
+   model rather than executed unattended.
+5. **`rig config` / `rig log` / `rig resume` / `rig review`** — these were registered with
+   no action handler and exited silently. All four are now implemented, with `--json`
+   support where it makes sense. `resume` continues the original session via
+   `AgentInput.resumeSessionId`.
+
+---
+
+## 7. Next Steps / Remaining Roadmap
+
+1. **Live Token Streaming**:
    - Real-time token streaming from providers during model generation.
-4. **npm Registry Release**:
-   - Publishing `rig-agent-harness` to npm when product milestones are completed.
+2. **Session Replay in the TUI**:
+   - Surface `rig log` output inside interactive mode instead of shelling out.
+3. **Publish the current tree to npm**:
+   - The published `0.1.1` predates the fixes above; bump and republish when ready.
