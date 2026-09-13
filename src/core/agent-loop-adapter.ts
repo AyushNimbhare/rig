@@ -1,31 +1,15 @@
 import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { ContextEngine } from "../context/context-engine.js";
-import { SafetyPolicy } from "../safety/policy.js";
-import { ToolRegistry } from "../tools/registry.js";
-import { listFiles, readFileTool, searchText } from "../tools/read-only.js";
-import { gitStatus, gitDiff } from "../tools/git.js";
-import { runShellTool } from "../tools/run-shell.js";
-import { extractTargetFilesFromPatch, writePatchTool } from "../tools/write-patch.js";
-import type { AgentInput, AgentResult, ToolObservation } from "./agent-types.js";
-import { SessionManager } from "./session.js";
+import { loadModelConfig, loadProviderConfig } from "../config/provider-setup.js";
 import { MockModelClient } from "../model/mock-model.js";
-import { OpenAIClient } from "../model/openai-client.js";
-import { PiModelClient } from "../model/pi-model-client.js";
 import type { ChatMessage, ModelClient } from "../model/model-client.js";
-import { loadModelConfig, loadProviderConfig, type ProviderConfig } from "../config/provider-setup.js";
-
-export function createDefaultToolRegistry(): ToolRegistry {
-  const registry = new ToolRegistry();
-  registry.register(listFiles);
-  registry.register(readFileTool);
-  registry.register(searchText);
-  registry.register(gitStatus);
-  registry.register(gitDiff);
-  registry.register(writePatchTool);
-  registry.register(runShellTool);
-  return registry;
-}
+import { SafetyPolicy } from "../safety/policy.js";
+import { createDefaultToolRegistry } from "../tools/default-registry.js";
+import { extractTargetFilesFromPatch } from "../tools/write-patch.js";
+import type { AgentInput, AgentResult, ToolObservation } from "./agent-types.js";
+import { createModelClient, modelSourceOf } from "./model-factory.js";
+import { SessionManager } from "./session.js";
 
 export async function runPiAgentLoop(
   input: AgentInput,
@@ -74,28 +58,6 @@ export async function runPiAgentLoop(
   // pi-style agent loop using RIG's infrastructure
   // Model proposes tool calls, harness validates/approves/executes
 
-  function createModelClient(modelName?: string, providerConfig?: ProviderConfig): ModelClient {
-    const providerBaseUrl =
-      providerConfig?.baseUrl ||
-      (providerConfig?.provider === "openrouter" ? "https://openrouter.ai/api/v1" : undefined);
-    const hasKey = Boolean(
-      providerConfig?.apiKey ||
-      process.env["OPENAI_API_KEY"] ||
-      process.env["OPENROUTER_API_KEY"] ||
-      process.env["RIG_API_BASE_URL"] ||
-      process.env["OPENAI_BASE_URL"],
-    );
-    if (hasKey) {
-      try {
-        return new OpenAIClient({ model: modelName || providerConfig?.model, apiKey: providerConfig?.apiKey, baseUrl: providerBaseUrl });
-      } catch {
-        return new MockModelClient();
-      }
-    }
-    // Use PiModelClient for offline pi-style agent loop
-    return new PiModelClient(modelName || "gpt-4o-mini");
-  }
-
   const providerConfig = await loadProviderConfig(workspace);
   const selectedModel = input.model || providerConfig?.model || (await loadModelConfig(workspace));
   let modelClient = clientOverride || createModelClient(selectedModel, providerConfig);
@@ -103,6 +65,10 @@ export async function runPiAgentLoop(
   if (!(modelClient && typeof modelClient.generate === "function")) {
     modelClient = new MockModelClient();
   }
+
+  // Record where the output actually comes from, so callers can tell a real
+  // answer from a scripted one.
+  const modelSource = modelSourceOf(modelClient);
 
   while (step < maxSteps) {
     step++;
@@ -141,6 +107,7 @@ export async function runPiAgentLoop(
         toolsUsed: Array.from(toolsUsedSet),
         filesChanged: Array.from(filesChangedSet),
         observations: allObservations,
+        modelSource,
       };
     }
 
@@ -352,5 +319,6 @@ export async function runPiAgentLoop(
     toolsUsed: Array.from(toolsUsedSet),
     filesChanged: Array.from(filesChangedSet),
     observations: allObservations,
+    modelSource,
   };
 }

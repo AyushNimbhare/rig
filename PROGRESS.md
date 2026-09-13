@@ -125,6 +125,7 @@ rig/
 │   │   ├── agent-types.ts           # Core types, events, and results
 │   │   ├── errors.ts                # Structured error classes
 │   │   ├── events.ts                # Session event schemas
+│   │   ├── model-factory.ts         # Single source of truth for model selection
 │   │   └── session.ts               # SessionManager & JSONL logger
 │   ├── model/
 │   │   ├── message-types.ts         # Message schema types
@@ -135,6 +136,7 @@ rig/
 │   ├── safety/
 │   │   └── policy.ts                # Safety policy & command risk classifier
 │   └── tools/
+│       ├── default-registry.ts      # The canonical tool set (single definition)
 │       ├── git.ts                   # git_status & git_diff tools
 │       ├── read-only.ts             # list_files, read_file, search_text
 │       ├── registry.ts              # ToolRegistry with Zod to JSON-schema conversion
@@ -143,7 +145,9 @@ rig/
 │       └── write-patch.ts           # write_patch unified diff applier
 ├── tests/
 │   ├── agent-loop.test.ts           # Multi-step loop, approval & fail-closed tests
+│   ├── cli-exit-code.test.ts        # End-to-end exit-code contract (spawns the CLI)
 │   ├── commands.test.ts             # config / log / resume / review & version tests
+│   ├── model-source.test.ts         # provider / offline / mock classification tests
 │   ├── pi-model-client.test.ts      # Offline fallback must never look like a real model
 │   ├── policy.test.ts               # Safety risk classification tests
 │   ├── render.test.ts               # Box geometry & cursor calculation tests
@@ -164,7 +168,7 @@ rig/
 | Check | Result | Details |
 |---|---|---|
 | **TypeScript Compilation** | ✅ **Clean (0 errors)** | `tsc --noEmit` |
-| **Unit & Integration Tests** | ✅ **50 / 50 Passing** | `vitest run` (12 test suites) |
+| **Unit & Integration Tests** | ✅ **59 / 59 Passing** | `vitest run` (14 test suites) |
 | **Production Build** | ✅ **Built successfully** | `tsup` ESM bundles + `.d.ts` types |
 | **npm Package Dry Run** | ✅ **Whitelisted `dist`, `README`, `LICENSE`** | Version resolved from `package.json` at runtime |
 | **Global CLI (`npm link`)** | ✅ **Verified** | Works globally across any local directory |
@@ -197,6 +201,18 @@ rig/
    model/thinking level it *would* have used. Guarded by `pi-model-client.test.ts`.
 7. **Repo hygiene** — `.workbuddy-ai/` (local agent memory) added to `.gitignore` so it can
    never be published.
+8. **Fail-closed exit codes** — `ask`, `run`, `review` and `resume` now exit `1` (with a
+   stderr warning) when no real model produced the answer, so a shell script or CI job
+   cannot mistake a scripted placeholder for a result. `AgentResult.modelSource` reports
+   `provider` / `offline` / `mock`, and `isUnrealSource()` is exported for SDK callers. The
+   warning goes to stderr so `--json` on stdout stays parseable. The interactive TUI is
+   deliberately exempt — one offline turn should not end the session.
+9. **De-duplicated the model and tool factories** — `createModelClient` and
+   `createDefaultToolRegistry` existed twice: a public copy in `agent-loop.ts` and a private
+   copy inside `agent-loop-adapter.ts`. Only the *private* copies actually ran, so fixing the
+   public one changed nothing — the same trap as the original version drift. Both now live
+   once, in `core/model-factory.ts` and `tools/default-registry.ts`, and the public entry
+   points re-export them.
 
 ---
 

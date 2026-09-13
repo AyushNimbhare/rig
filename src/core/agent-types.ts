@@ -1,4 +1,5 @@
 import type { ToolCall } from "../model/model-client.js";
+import type { ModelSource } from "./model-factory.js";
 
 export type RiskLevel =
   | "read_only"
@@ -51,4 +52,10 @@ export type AgentResult = {
   toolsUsed: string[];
   filesChanged: string[];
   observations: ToolObservation[];
+  /**
+   * Where the model output came from. Only `provider` means a real model
+   * reasoned about the task; `offline` and `mock` mean the message is
+   * scripted and must not be treated as a genuine answer.
+   */
+  modelSource?: ModelSource;
 };

@@ -1,5 +1,7 @@
 // Core Agent Engine & Types
 export { runAgentLoop, createDefaultToolRegistry, createModelClient } from "./core/agent-loop.js";
+export { isUnrealSource, modelSourceOf } from "./core/model-factory.js";
+export type { ModelSource } from "./core/model-factory.js";
 export type {
   AgentInput,
   AgentResult,

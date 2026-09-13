@@ -16,6 +16,7 @@ import {
 import { isWorkspaceSetup, setupWorkspace } from "../config/workspace-setup.js";
 import { runAgentLoop } from "../core/agent-loop.js";
 import type { AgentResult, ApprovalRequest } from "../core/agent-types.js";
+import { isUnrealSource } from "../core/model-factory.js";
 import {
   createTheme,
   renderAsk,
@@ -23,6 +24,7 @@ import {
   renderGoodbye,
   renderHelp,
   renderInputBox,
+  renderOfflineWarning,
   renderSetupScreen,
   renderStatus,
   renderTurn,
@@ -122,6 +124,19 @@ export async function runTask(
   });
 }
 
+/**
+ * Fail closed on the exit code.
+ *
+ * If no real model produced the answer, the command did not do what was asked,
+ * so it must not report success to a shell or CI system. The warning is written
+ * to stderr so `--json` output on stdout stays parseable.
+ */
+function flagUnrealModel(result: AgentResult, noColor: boolean): void {
+  if (!isUnrealSource(result.modelSource)) return;
+  process.exitCode = 1;
+  console.error(renderOfflineWarning(result.modelSource, noColor));
+}
+
 export function runInteractive(workspace = process.cwd(), noColor = false): Promise<void> {
   return new Promise<void>(async (resolve) => {
     // Non-interactive stdin (pipes, CI, `echo ... | rig`): run a plain
@@ -139,6 +154,9 @@ export function runInteractive(workspace = process.cwd(), noColor = false): Prom
           }
           const result = await runTask(trimmed, { workspace, noColor });
           console.log(renderAsk(result, { noColor }));
+          // The answer already says it is a placeholder; here we only make the
+          // failure visible to whatever is driving this REPL.
+          if (isUnrealSource(result.modelSource)) process.exitCode = 1;
         }
       } finally {
         rl.close();
@@ -1180,6 +1198,7 @@ program
         noColor: global.color === false,
       });
       console.log(renderAsk(result, { noColor: global.color === false, json: global.json }));
+      flagUnrealModel(result, global.color === false);
     } catch (error) {
       console.error(renderError(error, command.parent?.opts().color === false));
       process.exitCode = 1;
@@ -1202,6 +1221,7 @@ program
         noColor: global.color === false,
       });
       console.log(renderAsk(result, { noColor: global.color === false, json: global.json }));
+      flagUnrealModel(result, global.color === false);
     } catch (error) {
       console.error(renderError(error, command.parent?.opts().color === false));
       process.exitCode = 1;
@@ -1317,6 +1337,7 @@ program
         resumeSessionId: session.id,
       });
       console.log(renderAsk(result, { noColor, json: global.json }));
+      flagUnrealModel(result, noColor);
     } catch (error) {
       console.error(renderError(error, noColor));
       process.exitCode = 1;
@@ -1355,6 +1376,7 @@ program
         noColor,
       });
       console.log(renderAsk(result, { noColor, json: global.json }));
+      flagUnrealModel(result, noColor);
     } catch (error) {
       console.error(renderError(error, noColor));
       process.exitCode = 1;

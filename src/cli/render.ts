@@ -1,5 +1,6 @@
 import chalk, { Chalk } from "chalk";
 import type { AgentResult, ToolObservation } from "../core/agent-types.js";
+import type { ModelSource } from "../core/model-factory.js";
 import { VERSION } from "../version.js";
 
 export type AskResult = {
@@ -635,7 +636,22 @@ export function renderError(error: unknown, noColor = false): string {
   return `\n  ${theme.error("✗")} ${theme.error("error")} ${theme.dim("·")} ${msg}\n`;
 }
 
-export function renderGoodbye(noColor = false): string {
+/**
+ * Warning shown when a run produced no real model output. Printed to stderr so
+ * that `--json` output on stdout stays parseable.
+ */
+export function renderOfflineWarning(source: ModelSource | undefined, noColor = false): string {
   const theme = createTheme(noColor);
+  const cause =
+    source === "mock"
+      ? "the configured provider could not be used"
+      : "no model provider is configured";
+  return (
+    `\n  ${theme.warn("⚠")} ${theme.warn("no model output")} ${theme.dim("·")} ${cause}, ` +
+    `so the answer above is a scripted placeholder, not a real reply.\n`
+  );
+}
+
+export function renderGoodbye(noColor = false): string {  const theme = createTheme(noColor);
   return `\n  ${theme.dim("RIG terminated. Goodbye.")}\n`;
 }

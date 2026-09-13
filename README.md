@@ -87,7 +87,7 @@ Supported providers:
 
 The provider configuration is loaded automatically for subsequent `ask`, `run`, and interactive prompts.
 
-If no provider is configured, RIG falls back to a deterministic offline client that exercises the real tool pipeline but performs no reasoning. Every message it returns is prefixed with `[offline fallback]` and states that no model was called — so a missing or misconfigured provider always looks broken rather than working.
+If no provider is configured, RIG falls back to a deterministic offline client that exercises the real tool pipeline but performs no reasoning. Every message it returns is prefixed with `[offline fallback]` and states that no model was called — so a missing or misconfigured provider always looks broken rather than working. Commands that produce an answer exit non-zero in this case; see [Exit codes](#exit-codes).
 
 ### Choosing an AI Model
 
@@ -168,6 +168,32 @@ Inside interactive mode:
 
 When RIG is working, a themed animated spinner is shown. Risky file writes and shell commands can request approval unless `--yes` is used. Piping into `rig` (or running it in CI) skips the TUI and runs a plain line-oriented REPL instead.
 
+### Exit codes
+
+RIG **fails closed** on its exit code. If a command that produces an answer did not
+actually get one from a model, it exits `1` and explains why on stderr — so a shell script
+or CI job cannot mistake a placeholder for a result.
+
+```bash
+rig ask "how does auth work" || echo "no real answer was produced"
+```
+
+| Exit | When |
+|---|---|
+| `0` | The command did what was asked, with a real model. |
+| `1` | The command failed, **or** it produced no real model output (no provider configured, or the configured provider could not be used). |
+| `1` | `review` / `resume` outside a git repository, or with no resumable session. |
+
+This applies to `ask`, `run`, `review` and `resume`. The read-only commands (`status`,
+`config`, `log`, `--version`, `--help`) exit `0`. Inside the interactive TUI the exit code
+is left alone, since a single offline turn should not end your session.
+
+The warning is written to **stderr**, so `--json` output on stdout stays parseable:
+
+```bash
+rig --json ask "how does auth work" > out.json   # still valid JSON, exit code 1
+```
+
 ### CLI Options
 - `-y, --yes`: Auto-approve all write and verification actions.
 - `-m, --model <model>`: Specify model name for this run.
@@ -201,6 +227,28 @@ const result = await runAgentLoop({
 console.log("Status:", result.status);
 console.log("Summary:", result.message);
 console.log("Files changed:", result.filesChanged);
+```
+
+### Knowing whether a real model answered
+
+`result.modelSource` tells you where the output came from, so library callers can apply the
+same fail-closed rule the CLI does:
+
+| Value | Meaning |
+|---|---|
+| `"provider"` | A real remote model was configured and called. |
+| `"offline"` | Nothing was configured, so the scripted offline client ran. |
+| `"mock"` | A provider was configured but unusable, or a mock was injected. |
+
+```typescript
+import { isUnrealSource } from "rig-agent-harness";
+
+const result = await runAgentLoop({ task: "...", workspace: process.cwd() });
+
+if (isUnrealSource(result.modelSource)) {
+  // `result.message` is a scripted placeholder, not an answer.
+  throw new Error("No model provider is configured.");
+}
 ```
 
 ### Approval semantics
