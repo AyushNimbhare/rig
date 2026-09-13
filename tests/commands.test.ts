@@ -137,6 +137,11 @@ describe("rig review", () => {
     expect(review.diff).toBe("");
     expect(review.files).toEqual([]);
   });
+
+  it("explains clearly when the workspace is not a git repository", async () => {
+    const workspace = await tempWorkspace();
+    await expect(collectReviewDiff(workspace)).rejects.toThrow(/not a git repository/i);
+  });
 });
 
 describe("version", () => {

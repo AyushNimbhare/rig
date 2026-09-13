@@ -270,8 +270,16 @@ export async function collectReviewDiff(
     const result = await exec("git", gitArgs, { cwd: root, maxBuffer: 4_000_000 });
     diff = result.stdout.trim();
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Unable to read git diff: ${message}`);
+    const failure = error as { stderr?: string; message?: string };
+    const stderr = (failure.stderr ?? "").trim();
+    const detail = stderr || failure.message || String(error);
+
+    if (/not a git repository/i.test(detail)) {
+      throw new Error("This workspace is not a git repository, so there is no diff to review.");
+    }
+
+    // execFile embeds the whole stderr block in the message; keep it to one line.
+    throw new Error(`Unable to read git diff: ${detail.split("\n")[0]}`);
   }
 
   const files = [...new Set(
