@@ -85,7 +85,9 @@ Supported providers:
 - **Ollama (local)** — no API key required
 - **Custom endpoint** — OpenAI-compatible services
 
-The provider configuration is loaded automatically for subsequent `ask`, `run`, and interactive prompts. If no provider is configured, RIG uses its deterministic mock client for offline testing.
+The provider configuration is loaded automatically for subsequent `ask`, `run`, and interactive prompts.
+
+If no provider is configured, RIG falls back to a deterministic offline client that exercises the real tool pipeline but performs no reasoning. Every message it returns is prefixed with `[offline fallback]` and states that no model was called — so a missing or misconfigured provider always looks broken rather than working.
 
 ### Choosing an AI Model
 

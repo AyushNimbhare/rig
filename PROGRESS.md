@@ -129,7 +129,7 @@ rig/
 │   ├── model/
 │   │   ├── message-types.ts         # Message schema types
 │   │   ├── mock-model.ts            # Deterministic mock client
-│   │   ├── pi-model-client.ts       # Offline pi-style fallback client
+│   │   ├── pi-model-client.ts       # Offline fallback client (always self-labelled)
 │   │   ├── model-client.ts          # Universal ModelClient interface
 │   │   └── openai-client.ts         # OpenAI/OpenRouter client
 │   ├── safety/
@@ -144,6 +144,7 @@ rig/
 ├── tests/
 │   ├── agent-loop.test.ts           # Multi-step loop, approval & fail-closed tests
 │   ├── commands.test.ts             # config / log / resume / review & version tests
+│   ├── pi-model-client.test.ts      # Offline fallback must never look like a real model
 │   ├── policy.test.ts               # Safety risk classification tests
 │   ├── render.test.ts               # Box geometry & cursor calculation tests
 │   ├── run-shell.test.ts            # Shell runner execution & timeout tests
@@ -163,7 +164,7 @@ rig/
 | Check | Result | Details |
 |---|---|---|
 | **TypeScript Compilation** | ✅ **Clean (0 errors)** | `tsc --noEmit` |
-| **Unit & Integration Tests** | ✅ **44 / 44 Passing** | `vitest run` (11 test suites) |
+| **Unit & Integration Tests** | ✅ **50 / 50 Passing** | `vitest run` (12 test suites) |
 | **Production Build** | ✅ **Built successfully** | `tsup` ESM bundles + `.d.ts` types |
 | **npm Package Dry Run** | ✅ **Whitelisted `dist`, `README`, `LICENSE`** | Version resolved from `package.json` at runtime |
 | **Global CLI (`npm link`)** | ✅ **Verified** | Works globally across any local directory |
@@ -189,6 +190,13 @@ rig/
    no action handler and exited silently. All four are now implemented, with `--json`
    support where it makes sense. `resume` continues the original session via
    `AgentInput.resumeSessionId`.
+6. **Offline fallback no longer impersonates a model** — `PiModelClient` previously replied
+   with confident prose (*"Analysis complete for: … Model used: …"*) without contacting any
+   provider, so a misconfigured setup looked like a working one. Every message it returns is
+   now prefixed with `[offline fallback]`, states that no model was called, and names the
+   model/thinking level it *would* have used. Guarded by `pi-model-client.test.ts`.
+7. **Repo hygiene** — `.workbuddy-ai/` (local agent memory) added to `.gitignore` so it can
+   never be published.
 
 ---
 

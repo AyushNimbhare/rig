@@ -4,3 +4,6 @@ dist/
 .rig/cache/
 .rig/provider.json
 .DS_Store
+
+# Local agent workspace (memory, skills) — never publish to the public repo
+.workbuddy-ai/
