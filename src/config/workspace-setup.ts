@@ -78,6 +78,8 @@ Add repository-specific guidance for RIG here:
     if (!content.includes(".rig/sessions")) entriesToAdd.push(".rig/sessions/");
     if (!content.includes(".rig/cache")) entriesToAdd.push(".rig/cache/");
     if (!content.includes(".rig/provider.json")) entriesToAdd.push(".rig/provider.json");
+    if (!content.includes(".rig/model.json")) entriesToAdd.push(".rig/model.json");
+    if (!content.includes(".rig/config.json")) entriesToAdd.push(".rig/config.json");
 
     if (entriesToAdd.length > 0) {
       const appendText = (content.length > 0 && !content.endsWith("\n") ? "\n" : "") + entriesToAdd.join("\n") + "\n";

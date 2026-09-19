@@ -23,6 +23,13 @@ const PROVIDER_KEYS = [
 const TSX = path.resolve("node_modules/.bin/tsx");
 const CLI = path.resolve("src/cli/index.ts");
 
+/**
+ * Spawning `tsx` compiles the whole CLI on every run, which costs a few seconds
+ * on an idle machine and far more under parallel load. The timeout is generous
+ * on purpose: a load-induced flake is worse than a slow test.
+ */
+const SPAWN_TIMEOUT = 180_000;
+
 function offlineEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   for (const key of PROVIDER_KEYS) delete env[key];
@@ -56,7 +63,7 @@ describe("CLI exit code when no model ran", () => {
     expect(stderr).toMatch(/no model output/i);
     // The answer is still delivered, and still self-identifies.
     expect(stdout).toContain(OFFLINE_MARKER);
-  }, 60_000);
+  }, SPAWN_TIMEOUT);
 
   it("exits non-zero for `run`", async () => {
     const workspace = await scratchWorkspace();
@@ -65,7 +72,7 @@ describe("CLI exit code when no model ran", () => {
 
     expect(code).toBe(1);
     expect(stderr).toMatch(/no model output/i);
-  }, 60_000);
+  }, SPAWN_TIMEOUT);
 
   it("keeps --json output parseable on stdout while failing on stderr", async () => {
     const workspace = await scratchWorkspace();
@@ -76,5 +83,5 @@ describe("CLI exit code when no model ran", () => {
     expect(stderr).toMatch(/no model output/i);
     // The warning must not corrupt the machine-readable channel.
     expect(() => JSON.parse(stdout)).not.toThrow();
-  }, 60_000);
+  }, SPAWN_TIMEOUT);
 });

@@ -37,7 +37,7 @@ graph TD
 
 ### A. Terminal User Interface (TUI) & Frontend
 - **Design Aesthetic**: Pixel-perfect cyberpunk / neon purple interface inspired by OpenCode & Claude Code.
-- **Top Bar**: macOS-style traffic light pills (`● ● ●`), active version (`rig v0.1.0`), dynamic shortened workspace path (`~/...`), and command shortcuts (`[ ⌘K to toggle ]`).
+- **Top Bar**: macOS-style traffic light pills (`● ● ●`), active version (`rig v0.1.1`, resolved from `package.json`), dynamic shortened workspace path (`~/...`), and command shortcuts (`[ ⌘K to toggle ]`).
 - **Ambient Scanlines & Glitch Pulse**: Seeded matrix-style scanlines on left/right margins. Glitch pulses flicker every 3.5–5s without moving the cursor or erasing background elements.
 - **Interactive Boxed Input**: Rounded border container (`╭───╮`, `╰───╯`) with placeholder header, `›` input row with character cursor locking, navigation shortcuts (`↑↓ to navigate ↵ to send [→]`), and command footer.
 - **Raw-Mode Keystroke Engine**: Full arrow key navigation (Left/Right), Backspace, Delete, Home (`Ctrl+A`), End (`Ctrl+E`), Enter, and instant `/clear`, `/help`, `/quit` commands.
@@ -62,7 +62,7 @@ graph TD
 - **Max Steps Safeguard**: Defaults to 30 steps with configurable CLI override (`--max-steps`).
 
 ### D. Model Client Layer
-- **Universal Provider**: Supports standard OpenAI API (`OPENAI_API_KEY`), OpenRouter (`OPENROUTER_API_KEY`), or custom local OpenAI-compatible endpoints (`RIG_API_BASE_URL` / `OPENAI_BASE_URL`).
+- **Universal Provider**: Supports standard OpenAI API (`OPENAI_API_KEY`), OpenRouter (`OPENROUTER_API_KEY`), Anthropic, or custom OpenAI- and Anthropic-compatible endpoints (`RIG_API_BASE_URL` / `OPENAI_BASE_URL`).
 - **Dynamic Model Selection**: Configurable via `--model` flag or `RIG_MODEL` env var (default: `gpt-4o-mini`).
 - **Mock Model Fallback**: Deterministic mock client for offline development and testing.
 - **Provider Configuration**: Workspace-local provider settings are loaded automatically by the agent loop; credentials are written with user-only file permissions.
@@ -213,6 +213,14 @@ rig/
    public one changed nothing — the same trap as the original version drift. Both now live
    once, in `core/model-factory.ts` and `tools/default-registry.ts`, and the public entry
    points re-export them.
+10. **Security hygiene — local `.rig` state no longer tracked** — `.rig/model.json` (a
+    per-machine model preference) had been committed in `5581e94` and was therefore published
+    on the public repo. It is now untracked (`git rm --cached`), and `.rig/model.json` +
+    `.rig/config.json` are added to both the repo `.gitignore` and the onboarding logic in
+    `workspace-setup.ts`, so new workspaces cannot repeat the mistake. See `SECURITY-AUDIT.md`.
+11. **Documentation refresh** — README and this report now document **Anthropic** provider
+    support, the corrected `/model` discovery behavior (no hard-coded fallback), the resolved
+    version, and a tidied exit-code table.
 
 ---
 

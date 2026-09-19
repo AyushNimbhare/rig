@@ -3,6 +3,8 @@ dist/
 .rig/sessions/
 .rig/cache/
 .rig/provider.json
+.rig/model.json
+.rig/config.json
 .DS_Store
 
 # Local agent workspace (memory, skills) — never publish to the public repo
