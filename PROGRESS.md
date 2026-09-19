@@ -62,7 +62,7 @@ graph TD
 - **Max Steps Safeguard**: Defaults to 30 steps with configurable CLI override (`--max-steps`).
 
 ### D. Model Client Layer
-- **Universal Provider**: Supports standard OpenAI API (`OPENAI_API_KEY`), OpenRouter (`OPENROUTER_API_KEY`), Anthropic, or custom OpenAI- and Anthropic-compatible endpoints (`RIG_API_BASE_URL` / `OPENAI_BASE_URL`).
+- **Universal Provider**: Supports standard OpenAI API (`OPENAI_API_KEY`), OpenRouter (`OPENROUTER_API_KEY`), or custom OpenAI-compatible endpoints (`RIG_API_BASE_URL` / `OPENAI_BASE_URL`). **Anthropic is not supported for chat** — see item 12 below.
 - **Dynamic Model Selection**: Configurable via `--model` flag or `RIG_MODEL` env var (default: `gpt-4o-mini`).
 - **Mock Model Fallback**: Deterministic mock client for offline development and testing.
 - **Provider Configuration**: Workspace-local provider settings are loaded automatically by the agent loop; credentials are written with user-only file permissions.
@@ -218,17 +218,44 @@ rig/
     on the public repo. It is now untracked (`git rm --cached`), and `.rig/model.json` +
     `.rig/config.json` are added to both the repo `.gitignore` and the onboarding logic in
     `workspace-setup.ts`, so new workspaces cannot repeat the mistake. See `SECURITY-AUDIT.md`.
-11. **Documentation refresh** — README and this report now document **Anthropic** provider
-    support, the corrected `/model` discovery behavior (no hard-coded fallback), the resolved
-    version, and a tidied exit-code table.
+11. **Documentation refresh** — README and this report now document the corrected `/model`
+    discovery behavior (no hard-coded fallback), the resolved version, and a tidied exit-code
+    table.
+12. **README repositioned, and a false Anthropic claim corrected** — the README now leads with
+    what RIG does and with the embedded/MCU angle (the one differentiator no mainstream agent
+    serves), instead of opening on jargon. While verifying every claim before publishing it,
+    **Anthropic support turned out to be false and has been corrected in both docs**:
+    - `resolveModelsEndpoint` / `buildAuthHeaders` in `provider-setup.ts` handle Anthropic
+      **for model discovery only** (`/v1/models` + `x-api-key`).
+    - `createModelClient` passes only `{model, apiKey, baseUrl}` to `OpenAIClient` — no
+      `apiCompat` — and `OpenAIClient` always POSTs to `${baseUrl}/chat/completions` with an
+      `Authorization: Bearer` header and an OpenAI-shaped payload.
+    - So selecting Anthropic would request `https://api.anthropic.com/chat/completions`,
+      which is not a valid endpoint. **`/v1/messages` appears nowhere in the codebase.**
+    - `ANTHROPIC_API_KEY` is also never read, so the env-var route does not select a client
+      at all.
+    The docs now state this plainly. Fixing it properly means implementing the Anthropic
+    Messages API (different endpoint, auth, payload, and `tool_use` / `tool_result` blocks).
 
 ---
 
 ## 7. Next Steps / Remaining Roadmap
 
-1. **Live Token Streaming**:
+1. **Context compaction** (highest leverage for agent quality):
+   - The loop pushes to `messages` unbounded — no trimming, summarisation or token budget, so
+     every prior tool result is re-sent each step. Long tasks will exhaust the window.
+2. **A reliable edit tool**:
+   - `write_patch` is the only editor and requires exact unified-diff context lines, which
+     fails often. Add `edit_file(path, old_string, new_string)` with a unique-match check.
+3. **Enforced verification**:
+   - The system prompt *asks* the model to run tests; nothing makes it happen. Detect the
+     project's check command and run it automatically after edits.
+4. **Anthropic Messages API client** (see item 12 in §6):
+   - Implement `/v1/messages` with `x-api-key`, top-level `system`, and `tool_use` /
+     `tool_result` blocks — or remove Anthropic from the provider picker until it works.
+5. **Live Token Streaming**:
    - Real-time token streaming from providers during model generation.
-2. **Session Replay in the TUI**:
+6. **Session Replay in the TUI**:
    - Surface `rig log` output inside interactive mode instead of shelling out.
-3. **Publish the current tree to npm**:
+7. **Publish the current tree to npm**:
    - The published `0.1.1` predates the fixes above; bump and republish when ready.
